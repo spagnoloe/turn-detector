@@ -221,3 +221,5 @@ __marimo__/
 
 # Confidential assignment brief (kept local only)
 docs/assignment/
+# Exported planning chats (kept local only)
+docs/chats/
