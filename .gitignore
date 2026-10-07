@@ -223,3 +223,6 @@ __marimo__/
 docs/assignment/
 # Exported planning chats (kept local only)
 docs/chats/
+
+# macOS Finder metadata
+.DS_Store
