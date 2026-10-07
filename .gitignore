@@ -226,3 +226,7 @@ docs/chats/
 
 # macOS Finder metadata
 .DS_Store
+
+# Local data and trained artifacts
+data/
+artifacts/

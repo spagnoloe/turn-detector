@@ -1,0 +1,28 @@
+[project]
+name = "turn-detector"
+version = "0.1.0"
+description = "Causal end-of-turn detector for voice agents, evaluated on TurnBench"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "huggingface-hub>=1.17.0",
+    "pyarrow>=24.0.0",
+    "turnbench",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+turnbench = { git = "https://github.com/SesameAILabs/turnbench", rev = "38a6f874322430cb3ca71d8a52aa1e636e88bad8" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ty>=0.0.85",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore:'click.utils.get_.*_stream' is deprecated:DeprecationWarning"]
