@@ -11,3 +11,7 @@ Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 ### Domain docs
 
 Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+## Task statement
+
+The problem this repo solves is defined in `docs/assignment/AI_ML_TurnDetector.pdf`. Read it before planning or speccing work.

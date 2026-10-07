@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Confidential assignment brief (kept local only)
+docs/assignment/
