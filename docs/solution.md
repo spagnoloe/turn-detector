@@ -8,7 +8,13 @@ _To be completed with the held-out evaluation (#9)._
 
 ## Serving and request latency
 
-The text-only model is served by a stateless FastAPI service in a CPU Docker image (see the [README](../README.md#serving)). The stress test sends real requests to the container with Locust, with each simulated caller sending requests back to back: the last 1 s of audio, the transcript so far, the previous turn and the silence duration, sampled from streaming a held-out conversation. Full table: [`results/models/text-only/stress_test.md`](../results/models/text-only/stress_test.md).
+The text-only and audio-only models are served by one stateless FastAPI service in a CPU Docker image (see the [README](../README.md#serving)). A request with audio is answered by the audio-only model, and any other request by the text-only model. The stress test sends real requests to the container with Locust, with each simulated caller sending requests back to back: the last 1 s of audio, the transcript so far, the previous turn and the silence duration, sampled from streaming a held-out conversation. For the text-only model, the requests were measured before the audio model existed, so they still carried the (then unused) audio; `--no-audio` now leaves it out.
+
+**Everything here ran on one MacBook Air** (ADR 0002): the container, Docker Desktop's Linux VM and the load generator all share the laptop's 10 CPU cores, with no GPU available to the container. These numbers show where the service's limits lie on that machine. They are not what a production server would do.
+
+### Text-only requests
+
+Full table: [`results/models/text-only/stress_test.md`](../results/models/text-only/stress_test.md).
 
 | Requests in flight | Throughput (req/s) | p50 (ms) | p95 (ms) | p99 (ms) |
 |---:|---:|---:|---:|---:|
@@ -30,6 +36,34 @@ Figures in the next two points that are not in the table come from one-off spot 
 - **The ceiling is the laptop, not the service.** With 8 workers instead of 4, the ceiling barely moves (≈290 req/s). Sending the same load from inside the container reaches about 390 req/s, and running natively reaches 640–730 req/s. On a Linux server, without Docker Desktop's VM and port forwarding, a container should do noticeably better. That has not been measured here.
 - **What that means in calls.** A call sends 20 requests per second while the user is silent. At 8 requests in flight (p99 45 ms), one laptop container serves about 13 calls in a pause at once. The load estimate in [How does it fit into a voice-agent architecture?](#how-does-it-fit-into-a-voice-agent-architecture) (about 1,400 req/s before peaks) would need roughly six such containers. More instances, behind a load balancer, keep each one below its knee.
 - **Cheap wins, not done here.** Batch concurrent requests into one encoder call. Export the encoder to ONNX Runtime or quantise it to int8. Skip the request entirely while the transcript hasn't changed since the last one, since the text model's output only changes when new words arrive. That alone removes most of the 20 requests per second.
+
+### Audio-only requests
+
+Full table: [`results/models/audio-only/stress_test.md`](../results/models/audio-only/stress_test.md). Same image, same setup.
+
+| Requests in flight | Throughput (req/s) | p50 (ms) | p95 (ms) | p99 (ms) |
+|---:|---:|---:|---:|---:|
+| 1 | 7.8 | 130 | 130 | 140 |
+| 2 | 14 | 140 | 140 | 150 |
+| 4 | 22 | 180 | 190 | 190 |
+| 8 | 31 | 260 | 270 | 280 |
+| 16 | 29 | 570 | 720 | 780 |
+| 32 | 24 | 1300 | 1800 | 2000 |
+| 64 | 20 | 3200 | 4000 | 4200 |
+
+**Does the <100 ms target hold?** No. On this laptop, an audio request takes about 130 ms even alone, and throughput saturates at about 30 req/s, a ninth of the text model's. No request failed.
+
+**Why it is slower.** The work per request is far larger than for text, and the laptop's container runs it on the slowest available path.
+
+- **The encoder does about ten times the work.** wav2vec2-base runs a 7-layer convolutional feature encoder over all 16,000 samples, then 8 transformer layers (the layers above the one the head reads are dropped) over 49 frames of 768 dimensions. That is about 65M parameters, all applied to the whole second on every request. The text model runs MiniLM's 6 small layers (384 dimensions, 22M parameters) over at most 64 tokens.
+- **Each worker runs it on one CPU thread, on Linux.** As with the text model, torch's Linux CPU build uses OpenBLAS, several times slower than macOS's Accelerate for these models, and Docker Desktop adds its VM and about 8 ms of port forwarding. A one-off spot check, not a recorded run: the same 8-layer encoder takes about 24 ms per window on one thread natively on macOS, against about 120 ms inside the container.
+- **Four workers share a VM that also serves the load.** Beyond 4 requests in flight, requests queue behind the encoder, and beyond 8 the laptop is saturated.
+
+**What it would take in production.** In a call the detector is asked 20 times a second while the user is silent, so one laptop container serves barely one call in a pause at once. A production deployment would change the hardware and the model before the architecture:
+
+- run the encoder on a GPU, or on a server CPU with an optimised runtime (ONNX Runtime, int8 quantisation), and batch concurrent requests into one encoder call;
+- use a smaller or distilled audio encoder: the head reads only layer 8, and the wav2vec2 features barely beat the silence duration (see [What the audio-only model adds](#what-are-the-limits-of-the-current-solution));
+- stream audio over a per-call WebSocket (see [How does it fit into a voice-agent architecture?](#how-does-it-fit-into-a-voice-agent-architecture)), so the server keeps each 50 ms of audio's convolutional features and only re-runs the transformer layers on each step, instead of re-encoding the whole 1 s on every request.
 
 ## Assumptions
 
@@ -141,6 +175,13 @@ Annotators use the TurnBench protocol (three annotators, 2-of-3 agreement within
 - **The likely cause is the encoder.** A mean-pooled sentence embedding captures what the text is about. Whether the turn sounds finished depends on its last few words, and that signal is diluted across up to 64 tokens. Adding the other speaker's turn dilutes it further.
 - **The data is hard for text, whatever the encoder.** 536 of the 711 mid-turn pauses follow a segment that ends in a full stop. Speakers often pause after a complete sentence and then carry on, so even the best of these classifiers would separate few such pauses from EOTs at a false-cut-in rate of 0.10. Prosody, in the audio model, is the better hope for these pauses.
 - **Cheap fixes, not done here:** feed only the end of the user's turn, add the handcrafted features to the head, or score completeness with a small language model's probability of the turn ending, as LiveKit's turn detector does.
+
+**What the audio-only model adds.** A little recall, and much earlier firings on the pauses it is sure of. Like the text-only model, it fires when its probability reaches a threshold, or else at a silence backstop, and the two are tuned together. At its chosen setting (P_audio ≥ 0.946, backstop 1500 ms) it has the highest cross-validated recall of the three models, 0.866 against the baseline's 0.853. Its false-cut-in rate is 0.113 against 0.098 ([`results/comparison/results.md`](../results/comparison/results.md)). Its detection latency is split in two: a p10 of 506 ms, from pauses where P_audio crosses the threshold early, and a median of 1300 ms, from the rest, which wait for the backstop.
+
+- **The selection rule trades speed for recall.** TurnBench's operating-point rule picks the highest recall within the false-cut-in budget. On the audio model's sweep that costs a lot of latency for a little recall. On all development conversations, the chosen setting reaches recall 0.862 at a median detection latency of 1500 ms. A threshold of 0.938 with a 2100 ms backstop reaches 0.840 at 936 ms, at the same false-cut-in rate. That is 2 points of recall for 560 ms. The baseline and the text-only model have no such trade-off: their best setting is also their fastest. The main figure shows it: the audio model's curve drops below 1000 ms just under the budget, while its chosen point sits at 1500 ms.
+- **Without the backstop, the model missed many EOTs.** At first the audio model fired only on the threshold, as issue #6 specified. At its best threshold, 29% of the development EOTs never got a firing: in 229 the user spoke again before P_audio reached the threshold, and in 177 it stayed below the threshold for 3 s of silence. Its recall was 0.707. The backstop catches those pauses as the baseline would, so the model can never do worse than the baseline on the data it is tuned on.
+- **The audio carries some signal, but not much.** P_audio at the very start of a pause, before any silence has built up, has a median of 0.39 for EOTs against 0.27 for mid-turn pauses. On a third of the development conversations, wav2vec2 features plus the silence duration ranked EOT steps above mid-turn steps with an out-of-fold AUC of 0.69 inside pauses, against 0.63 for the silence duration alone, and 0.68 against 0.50 at the pause start. With 1537 features and about 50,000 correlated samples from 26 conversations, the head needed very strong regularisation (C = 1e-4) to beat silence alone at all.
+- **It is trained only up to 1 s into a pause** but listens up to 3 s in. Beyond 1 s the window is all silence and the head extrapolates on the silence duration. With the backstop at 1.5 s, this matters only between 1 and 1.5 s into a pause.
 
 **Data.**
 

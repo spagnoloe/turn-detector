@@ -2,13 +2,14 @@
 
 import base64
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
 from turn_detector.model import Audio, Segment, SpeakerSide
+from turn_detector.models.audio_only import AudioOnly
 from turn_detector.models.text_only import TextContext, TextOnly
 from turn_detector.serving import AUDIO_BYTES, create_app
 from turn_detector.streaming import Firing, audio_window, pcm_16k, stream
@@ -20,6 +21,16 @@ class Stub:
 
     def p_eot(self, contexts: Sequence[TextContext]) -> list[float]:
         return [1.0 if context.turn_so_far.endswith(".") else 0.0 for context in contexts]
+
+
+@dataclass(frozen=True)
+class AudioStub:
+    """P(EOT) = 1 once the silence so far is in (`after_s`, 3.2 s), else 0; ignores the audio."""
+
+    after_s: float
+
+    def p_eot(self, windows: np.ndarray, silence_s: np.ndarray) -> np.ndarray:
+        return ((silence_s > self.after_s) & (silence_s < 3.2)).astype(float)
 
 
 MODEL = TextOnly(Stub(), threshold=0.5, backstop_s=1.5)
@@ -36,10 +47,14 @@ def side(*segments: tuple[float, float, str], other: Sequence[tuple[float, float
     )
 
 
+def served(audio_model: AudioOnly):
+    with TestClient(create_app(load_text=lambda: MODEL, load_audio=lambda: audio_model)) as client:
+        yield lambda payload: client.post("/predict", json=payload).raise_for_status().json()
+
+
 @pytest.fixture(scope="module")
 def predict():
-    with TestClient(create_app(lambda: MODEL)) as client:
-        yield lambda payload: client.post("/predict", json=payload).raise_for_status().json()
+    yield from served(AudioOnly(AudioStub(0.12), threshold=0.5, backstop_s=1.5))
 
 
 SIDES = [
@@ -55,6 +70,21 @@ SIDES = [
 @pytest.mark.parametrize("user", SIDES)
 def test_streaming_through_the_api_fires_where_the_model_does(user, predict):
     assert [firing.time_s for firing in stream(user, predict)] == pytest.approx(MODEL.fire(user))
+
+
+def with_audio(user: SpeakerSide) -> SpeakerSide:
+    return replace(user, audio=Audio(np.zeros(round(user.duration_s * 48_000), np.float32), 48_000))
+
+
+@pytest.mark.parametrize("after_s", [0.12, 2.92, 3.01])
+@pytest.mark.parametrize("user", [*SIDES, side((1.0, 3.0, "Hi."), (8.0, 9.0, "Bye."))])
+def test_streaming_audio_through_the_api_fires_where_the_audio_model_does(user, after_s):
+    # No wait for the ASR, the backstop when P never gets there, and nothing after 3 s into a pause.
+    audio_model = AudioOnly(AudioStub(after_s), threshold=0.5, backstop_s=1.5)
+    user = with_audio(user)
+    assert user.audio is not None
+    for predict in served(audio_model):
+        assert [f.time_s for f in stream(user, predict, pcm_16k(user.audio))] == pytest.approx(audio_model.fire(user))
 
 
 def test_firings_say_why_they_fired(predict):

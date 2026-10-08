@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from turn_detector.model import Audio, Model, Segment, SpeakerSide
+from turn_detector.models.audio_only import AudioOnly
 from turn_detector.models.baseline import Baseline
 from turn_detector.models.text_only import TextContext, TextOnly
 
@@ -28,11 +29,23 @@ class HashClassifier:
         return [zlib.crc32(repr(context).encode()) / 2**32 for context in contexts]
 
 
+@dataclass(frozen=True)
+class ProjectionClassifier:
+    """A stand-in for the trained audio classifier whose P(EOT) changes with any change to its
+    window or to the silence duration: a random projection, wrapped onto [0, 1]."""
+
+    def p_eot(self, windows: np.ndarray, silence_s: np.ndarray) -> np.ndarray:
+        projection = np.random.default_rng(0).standard_normal(windows.shape[1])
+        return (np.sin(windows @ projection * 1e3 + silence_s * 7919) + 1) / 2
+
+
 MODELS_UNDER_TEST: list[Model] = [
     Baseline(timeout_ms=200),
     Baseline(timeout_ms=1000),
     TextOnly(HashClassifier(), threshold=0.5, backstop_s=1.5),
     TextOnly(HashClassifier(), threshold=0.3, backstop_s=0.4),
+    AudioOnly(ProjectionClassifier(), threshold=0.9, backstop_s=1.5),
+    AudioOnly(ProjectionClassifier(), threshold=0.99, backstop_s=0.4),
 ]
 
 DURATION_S = 30.0
