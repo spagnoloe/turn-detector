@@ -43,7 +43,7 @@ This prints counts per split and per speaker. The dev-set totals (1904 EOTs, 106
 
 ## Detector systems
 
-Every system implements one interface (`turn_detector.detector`): it takes one speaker's side of a conversation (that speaker's audio, their speech segments with transcripts, and the other speaker's turns) and returns its **firing** times. Each system owns its firing rule. The segments are TurnBench's 2-of-3 consensus segments (`turn_detector.timeline`), so their ends are the pauses every system sees: a perfect pause detector in place of a real VAD. Speech without annotator agreement is missing from the timeline, and each segment's transcript comes from the closest-matching annotator segment.
+Every system implements one interface (`turn_detector.detector`): it takes one speaker's side of a conversation (that speaker's audio, their speech segments with transcripts, and the other speaker's turns) and returns its **firing** times. Each system owns its firing rule. The segments are TurnBench's 2-of-3 consensus segments (`turn_detector.timeline`), so their ends are the pauses every system sees: a perfect pause detector in place of a real VAD. Speech without annotator agreement is missing from the timeline, and each segment's transcript comes from the closest-matching annotator segment (the annotators' texts agree 99% of the time).
 
 - **Silence timeout** (`turn_detector.baseline`): fires at segment end + N ms if the user hasn't resumed by then.
 

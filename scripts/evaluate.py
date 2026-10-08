@@ -41,8 +41,11 @@ def main() -> None:
         f"  cross-validated: recall {s.recall:.3f}, false-cut-in rate {s.false_cut_in_rate:.3f}, "
         f"detection latency p50 {s.detection_latency_p50_ms:.0f} ms"
     )
-    for path in write_report():
+    paths = write_report()
+    for path in paths:
         print(f"wrote {path}")
+    print()
+    print(paths[0].read_text())
 
 
 if __name__ == "__main__":
