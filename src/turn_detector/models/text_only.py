@@ -68,7 +68,7 @@ def text_context(side: SpeakerSide, end: float) -> TextContext:
     ended = sorted(
         [(segment.end, True, segment.text) for segment in side.segments if segment.end <= end]
         + [(segment.end, False, segment.text) for segment in side.other_turns if segment.end <= end],
-        key=lambda ended: (ended[0], ended[1]),  # on equal ends, the user's segment comes last
+        key=lambda segment: (segment[0], segment[1]),  # on equal ends, the user's segment comes last
     )
     runs: list[tuple[bool, list[str]]] = []
     for _, is_user, text in ended:
@@ -110,18 +110,18 @@ class SentenceEncoder:
     cache: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
 
     @cached_property
-    def model(self):
+    def transformer(self):
         from sentence_transformers import SentenceTransformer
 
-        model = SentenceTransformer(self.name, device="cpu")
-        model.max_seq_length = self.max_tokens
-        model.tokenizer.truncation_side = "left"  # the end of the user's turn matters most
-        return model
+        transformer = SentenceTransformer(self.name, device="cpu")
+        transformer.max_seq_length = self.max_tokens
+        transformer.tokenizer.truncation_side = "left"  # the end of the user's turn matters most
+        return transformer
 
     def __call__(self, texts: Sequence[str]) -> np.ndarray:
         new = list(dict.fromkeys(text for text in texts if text not in self.cache))
         if new:
-            self.cache.update(zip(new, self.model.encode(new, batch_size=64, convert_to_numpy=True)))
+            self.cache.update(zip(new, self.transformer.encode(new, batch_size=64, convert_to_numpy=True)))
         return np.stack([self.cache[text] for text in texts])
 
 
@@ -192,8 +192,6 @@ def save_text_only(model: TextOnly, path: Path = ARTIFACT_PATH) -> Path:
         "encoder": classifier.encoder.name,
         "max_tokens": getattr(classifier.encoder, "max_tokens", MAX_TOKENS),
         "threshold": model.threshold,
-        "asr_lag_s": ASR_LAG_S,
-        "backstop_s": BACKSTOP_S,
         "bias": classifier.head.bias,
         "weights": classifier.head.weights.tolist(),
     }
