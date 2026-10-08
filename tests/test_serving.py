@@ -49,7 +49,7 @@ def audio_stub():
 def client(stub, audio_stub):
     app = create_app(
         load_text=lambda: TextOnly(stub, threshold=0.6, backstop_s=1.15),
-        load_audio=lambda: AudioOnly(audio_stub, threshold=0.7),
+        load_audio=lambda: AudioOnly(audio_stub, threshold=0.7, backstop_s=0.85),
     )
     with TestClient(app) as client:
         yield client
@@ -83,7 +83,7 @@ def test_requests_with_audio_are_answered_by_the_audio_model(client):
         json={"audio": pcm(samples), "transcript": "To Barcelona.", "previous_turn": "Where to?", "silence_ms": 250},
     )
     assert response.status_code == 200
-    assert response.json() == {"p_eot": 0.5, "threshold": 0.7, "backstop_ms": None, "model": "audio-only"}
+    assert response.json() == {"p_eot": 0.5, "threshold": 0.7, "backstop_ms": 850, "model": "audio-only"}
 
 
 def test_the_audio_model_hears_the_window_as_samples_in_minus_1_to_1_and_the_silence_in_seconds(client, audio_stub):
@@ -139,7 +139,7 @@ def test_the_models_are_loaded_once_at_startup(stub, audio_stub):
 
     def load_audio():
         loads.append("audio")
-        return AudioOnly(audio_stub, threshold=0.7)
+        return AudioOnly(audio_stub, threshold=0.7, backstop_s=0.85)
 
     with TestClient(create_app(load_text=load_text, load_audio=load_audio)) as client:
         assert loads == ["text", "audio"]  # before any request

@@ -54,7 +54,7 @@ def served(audio_model: AudioOnly):
 
 @pytest.fixture(scope="module")
 def predict():
-    yield from served(AudioOnly(AudioStub(0.12), threshold=0.5))
+    yield from served(AudioOnly(AudioStub(0.12), threshold=0.5, backstop_s=1.5))
 
 
 SIDES = [
@@ -79,8 +79,8 @@ def with_audio(user: SpeakerSide) -> SpeakerSide:
 @pytest.mark.parametrize("after_s", [0.12, 2.92, 3.01])
 @pytest.mark.parametrize("user", [*SIDES, side((1.0, 3.0, "Hi."), (8.0, 9.0, "Bye."))])
 def test_streaming_audio_through_the_api_fires_where_the_audio_model_does(user, after_s):
-    # No wait for the ASR, and nothing after 3 s into a pause (P is 1 there for the last stub).
-    audio_model = AudioOnly(AudioStub(after_s), threshold=0.5)
+    # No wait for the ASR, the backstop when P never gets there, and nothing after 3 s into a pause.
+    audio_model = AudioOnly(AudioStub(after_s), threshold=0.5, backstop_s=1.5)
     user = with_audio(user)
     assert user.audio is not None
     for predict in served(audio_model):

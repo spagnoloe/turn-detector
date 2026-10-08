@@ -104,7 +104,9 @@ def create_app(
         if body.audio is not None and body.silence_ms is not None:
             audio: AudioOnly = request.app.state.audio
             [p_eot] = audio.classifier.p_eot(samples(body.audio), np.array([body.silence_ms / 1000]))
-            return PredictResponse(p_eot=float(p_eot), threshold=audio.threshold, backstop_ms=None, model=audio.name)
+            return PredictResponse(
+                p_eot=float(p_eot), threshold=audio.threshold, backstop_ms=round(audio.backstop_s * 1000), model=audio.name
+            )
         text: TextOnly = request.app.state.text
         [p_eot] = text.classifier.p_eot([TextContext(body.previous_turn or "", body.transcript or "")])
         return PredictResponse(

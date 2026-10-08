@@ -44,8 +44,8 @@ MODELS_UNDER_TEST: list[Model] = [
     Baseline(timeout_ms=1000),
     TextOnly(HashClassifier(), threshold=0.5, backstop_s=1.5),
     TextOnly(HashClassifier(), threshold=0.3, backstop_s=0.4),
-    AudioOnly(ProjectionClassifier(), threshold=0.9),
-    AudioOnly(ProjectionClassifier(), threshold=0.99),
+    AudioOnly(ProjectionClassifier(), threshold=0.9, backstop_s=1.5),
+    AudioOnly(ProjectionClassifier(), threshold=0.99, backstop_s=0.4),
 ]
 
 DURATION_S = 30.0

@@ -2,9 +2,11 @@
 
 Every 50 ms while the user is silent, the classifier hears the user's last 1 s of audio, resampled
 to 16 kHz, and the silence duration so far, and outputs P_audio(EOT). The firing rule: in each
-pause, fire on the rising edge where P_audio first reaches the threshold, at most once per pause
-and only while the user is still silent. The threshold is the one knob. The model stops listening
-3 s into a pause, since TurnBench never counts a later firing as a hit.
+pause, fire on the rising edge where P_audio first reaches the threshold, or at a silence backstop
+if that comes first, at most once per pause and only while the user is still silent. The
+threshold and the backstop are the two knobs, tuned together, as for the text-only model; with
+the threshold above every P_audio, the model is the baseline with the backstop as its timeout.
+The model stops listening 3 s into a pause, since TurnBench never counts a later firing as a hit.
 
 The classifier is a frozen `wav2vec2-base` encoder (ADR 0002) with a logistic-regression head over
 three features: the mean of the window's frames, the mean of its last speech frames (how the
@@ -164,28 +166,38 @@ class AudioClassifier:
 
 
 @dataclass(frozen=True)
-class ScoredPause:
-    """A segment end with the 50 ms steps of the pause after it, each with P_audio there."""
+class Pause:
+    """A segment end of the user's, when they stop being silent after it (they resume, the call
+    ends or the model stops listening, whichever comes first), and the 50 ms steps until then."""
 
     end: float
+    silent_until: float
+    steps: list[float]
+
+
+def pauses(side: SpeakerSide) -> list[Pause]:
+    """Every distinct segment end of the user's, in time order, as a pause."""
+    result = []
+    for end in sorted({segment.end for segment in side.segments}):
+        silent_until = min(next_speech_start(side, end), side.duration_s, end + HORIZON_S)
+        result.append(Pause(end, silent_until, list(steps(end, silent_until))))
+    return result
+
+
+@dataclass(frozen=True)
+class ScoredPause:
+    """A pause with P_audio at each of its steps, as (time, P_audio)."""
+
+    pause: Pause
     steps: list[tuple[float, float]]
 
 
-def pause_steps(side: SpeakerSide) -> list[tuple[float, list[float]]]:
-    """Every distinct segment end of the user's, with the 50 ms steps at which the user is still
-    silent after it, up to the horizon."""
-    return [
-        (end, list(steps(end, min(next_speech_start(side, end), side.duration_s, end + HORIZON_S))))
-        for end in sorted({segment.end for segment in side.segments})
-    ]
-
-
-def scored(pauses: Sequence[tuple[float, list[float]]], p_eot: Sequence[float]) -> list[ScoredPause]:
-    """`pause_steps` with P_audio at each step, `p_eot` holding them in step order."""
+def scored(pauses: Sequence[Pause], p_eot: Sequence[float]) -> list[ScoredPause]:
+    """The pauses with P_audio at each step, `p_eot` holding them in step order."""
     result, i = [], 0
-    for end, times in pauses:
-        result.append(ScoredPause(end, list(zip(times, map(float, p_eot[i : i + len(times)])))))
-        i += len(times)
+    for pause in pauses:
+        result.append(ScoredPause(pause, list(zip(pause.steps, map(float, p_eot[i : i + len(pause.steps)])))))
+        i += len(pause.steps)
     return result
 
 
@@ -193,41 +205,47 @@ def scored_pauses(side: SpeakerSide, classifier: Classifier) -> list[ScoredPause
     """Every pause of the user's, each step scored by `classifier`."""
     if side.audio is None:
         raise ValueError("the audio-only model needs the user's audio")
-    pauses = pause_steps(side)
-    times = [t for _, ts in pauses for t in ts]
-    silence_s = np.array([t - end for end, ts in pauses for t in ts])
+    found = pauses(side)
+    times = [t for pause in found for t in pause.steps]
+    silence_s = np.array([t - pause.end for pause in found for t in pause.steps])
     p_eot = []
     for start in range(0, len(times), WINDOWS_PER_BATCH):
         batch = windows(side.audio, times[start : start + WINDOWS_PER_BATCH])
         p_eot.extend(classifier.p_eot(batch, silence_s[start : start + WINDOWS_PER_BATCH]))
-    return scored(pauses, p_eot)
+    return scored(found, p_eot)
 
 
-def firings(pauses: Sequence[ScoredPause], threshold: float) -> list[float]:
+def firings(pauses: Sequence[ScoredPause], threshold: float, backstop_s: float) -> list[float]:
     """The firing rule: in each pause, fire on the rising edge where P_audio first reaches the
-    threshold. While the user speaks there is no firing, so the first step counts as an edge."""
+    threshold, or at the backstop if that comes first, only while the user is still silent. While
+    the user speaks there is no firing, so the first step counts as an edge."""
     firings = []
-    for pause in pauses:
-        firing = next((t for t, p in pause.steps if p >= threshold), None)
-        if firing is not None:
+    for scored_pause in pauses:
+        pause = scored_pause.pause
+        confident = next((t for t, p in scored_pause.steps if p >= threshold), math.inf)
+        firing = min(confident, pause.end + backstop_s)
+        if firing <= pause.silent_until + EPSILON_S:
             firings.append(firing)
     return firings
 
 
 @dataclass(frozen=True)
 class AudioOnly:
-    """Fire at the first 50 ms step of a pause where P_audio >= `threshold`, up to 3 s into it."""
+    """Fire at the first 50 ms step of a pause where P_audio >= `threshold`, or `backstop_s` into
+    it if that comes first, up to 3 s into it and only while the user is still silent."""
 
     classifier: Classifier
     threshold: float
+    backstop_s: float
     name: str = NAME
 
     def fire(self, side: SpeakerSide) -> list[float]:
-        return firings(scored_pauses(side, self.classifier), self.threshold)
+        return firings(scored_pauses(side, self.classifier), self.threshold, self.backstop_s)
 
 
 def save_audio_only(model: AudioOnly, path: Path = ARTIFACT_PATH) -> Path:
-    """Save the head, its threshold and the encoder's name and layer; the encoder is downloaded."""
+    """Save the head, its threshold and backstop, and the encoder's name and layer; the encoder is
+    downloaded."""
     if not isinstance(model.classifier, AudioClassifier):
         raise TypeError("only a model with a trained AudioClassifier can be saved")
     classifier = model.classifier
@@ -236,6 +254,7 @@ def save_audio_only(model: AudioOnly, path: Path = ARTIFACT_PATH) -> Path:
         "encoder": classifier.encoder.name,
         "layer": getattr(classifier.encoder, "layer", LAYER),
         "threshold": model.threshold,
+        "backstop_s": model.backstop_s,
         "bias": classifier.head.bias,
         "weights": classifier.head.weights.tolist(),
     }
@@ -251,7 +270,7 @@ def load_audio_only(path: Path = ARTIFACT_PATH, encoder: Encoder | None = None) 
     if encoder.name != stored["encoder"]:
         raise ValueError(f"the head was trained on encoder {stored['encoder']!r}, not {encoder.name!r}")
     head = LogisticHead(np.array(stored["weights"]), stored["bias"])
-    return AudioOnly(AudioClassifier(encoder, head), stored["threshold"])
+    return AudioOnly(AudioClassifier(encoder, head), stored["threshold"], stored["backstop_s"])
 
 
 # Cached features. A side's features are kept for every 50 ms step the evaluation scores and every
@@ -289,10 +308,10 @@ def feature_cache_path(side: SpeakerSide, encoder: Encoder, cache_dir: Path = FE
 def side_features(side: SpeakerSide, encoder: Encoder, cache_dir: Path = FEATURE_CACHE_DIR) -> SideFeatures:
     """The features at every pause step and speech sample of `side`, from the cache if there; the
     user's audio is loaded from the dev set when they are not."""
-    pauses = pause_steps(side)
+    found = pauses(side)
     speech = speech_samples(side)
-    times = np.array([t for _, ts in pauses for t in ts] + speech)
-    pause_ends = np.array([end for end, ts in pauses for _ in ts] + [math.nan] * len(speech))
+    times = np.array([t for pause in found for t in pause.steps] + speech)
+    pause_ends = np.array([pause.end for pause in found for _ in pause.steps] + [math.nan] * len(speech))
     path = feature_cache_path(side, encoder, cache_dir)
     if path.exists():
         cached = np.load(path)
@@ -331,32 +350,34 @@ def labelled_samples(conversation: EvaluationConversation, sides: dict[int, Side
 
 @dataclass(frozen=True)
 class CrossFitted:
-    """The audio-only model as the evaluation scores it, at one threshold. Each side's steps were
-    scored once, by the head that never saw that conversation's speakers."""
+    """The audio-only model as the evaluation scores it, at one setting. Each side's steps were
+    scored once, by the head that never saw that conversation's speakers, so a sweep over settings
+    only re-applies the firing rule."""
 
     pauses: dict[tuple[str, int], list[ScoredPause]]
     threshold: float
+    backstop_s: float
     name: str = NAME
 
     def fire(self, side: SpeakerSide) -> list[float]:
-        return firings(self.pauses[(side.conversation_id, side.speaker)], self.threshold)
+        return firings(self.pauses[(side.conversation_id, side.speaker)], self.threshold, self.backstop_s)
 
 
 @dataclass(frozen=True)
 class FittedAudioOnly:
     """Every development side's steps scored by cross-fitted heads, and a head trained on all
-    conversations. A setting is (threshold,)."""
+    conversations. A setting is (threshold, backstop in ms)."""
 
     pauses: dict[tuple[str, int], list[ScoredPause]]
     final_classifier: AudioClassifier
 
     def build(self, setting: Setting) -> CrossFitted:
-        (threshold,) = setting
-        return CrossFitted(self.pauses, threshold)
+        threshold, backstop_ms = setting
+        return CrossFitted(self.pauses, threshold, backstop_ms / 1000)
 
     def save(self, setting: Setting) -> list[Path]:
-        (threshold,) = setting
-        return [save_audio_only(AudioOnly(self.final_classifier, threshold))]
+        threshold, backstop_ms = setting
+        return [save_audio_only(AudioOnly(self.final_classifier, threshold, backstop_ms / 1000))]
 
 
 def fit(conversations: Sequence[EvaluationConversation]) -> FittedAudioOnly:
@@ -382,7 +403,7 @@ def fit(conversations: Sequence[EvaluationConversation]) -> FittedAudioOnly:
         )
 
     all_ids = list(samples)
-    pauses = {}
+    scored_by_side = {}
     for group in speaker_groups([c.info for c in conversations]):
         held_out = {c.conversation_id for c in group}
         head = head_trained_on([i for i in all_ids if i not in held_out])
@@ -390,7 +411,7 @@ def fit(conversations: Sequence[EvaluationConversation]) -> FittedAudioOnly:
             for side in conversation.sides:
                 side_found = found[(side.conversation_id, side.speaker)]
                 in_pause = ~np.isnan(side_found.pause_ends)
-                pauses[(side.conversation_id, side.speaker)] = scored(
-                    pause_steps(side), head(side_found.features[in_pause]).tolist()
+                scored_by_side[(side.conversation_id, side.speaker)] = scored(
+                    pauses(side), head(side_found.features[in_pause]).tolist()
                 )
-    return FittedAudioOnly(pauses, AudioClassifier(encoder, head_trained_on(all_ids)))
+    return FittedAudioOnly(scored_by_side, AudioClassifier(encoder, head_trained_on(all_ids)))

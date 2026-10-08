@@ -18,6 +18,7 @@ from turn_detector.models.audio_only import (
 )
 
 SAMPLE_RATE = 48_000
+NO_BACKSTOP_S = 4.0  # beyond the 3 s horizon, so it never fires
 
 
 class RisesWithSilence:
@@ -41,7 +42,7 @@ def side(*segments: tuple[float, float], duration_s=20.0, audio: np.ndarray | No
 
 def test_fires_at_the_first_50_ms_step_where_p_reaches_the_threshold():
     # P = silence: 0.30 at 3.30 s is below 0.33, 0.35 at 3.35 s is above it.
-    assert AudioOnly(RisesWithSilence(), threshold=0.33).fire(side((1.0, 3.0))) == pytest.approx([3.35])
+    assert AudioOnly(RisesWithSilence(), threshold=0.33, backstop_s=NO_BACKSTOP_S).fire(side((1.0, 3.0))) == pytest.approx([3.35])
 
 
 class Oscillates:
@@ -53,16 +54,16 @@ class Oscillates:
 
 def test_fires_at_most_once_per_pause_on_the_rising_edge():
     # P rises above 0.5 again at every other step of both pauses; only the first edge fires.
-    assert AudioOnly(Oscillates(), threshold=0.5).fire(side((1.0, 3.0), (5.0, 6.0))) == pytest.approx([3.0, 6.0])
+    assert AudioOnly(Oscillates(), threshold=0.5, backstop_s=NO_BACKSTOP_S).fire(side((1.0, 3.0), (5.0, 6.0))) == pytest.approx([3.0, 6.0])
 
 
 def test_does_not_fire_below_the_threshold():
-    assert AudioOnly(Oscillates(), threshold=0.95).fire(side((1.0, 3.0), (5.0, 6.0))) == []
+    assert AudioOnly(Oscillates(), threshold=0.95, backstop_s=NO_BACKSTOP_S).fire(side((1.0, 3.0), (5.0, 6.0))) == []
 
 
 def test_does_not_fire_once_the_user_resumes_or_the_conversation_ends():
     # P reaches 0.42 at 0.45 s of silence: too late for a 0.3 s pause and a call ending 0.4 s in.
-    model = AudioOnly(RisesWithSilence(), threshold=0.42)
+    model = AudioOnly(RisesWithSilence(), threshold=0.42, backstop_s=NO_BACKSTOP_S)
     assert model.fire(side((1.0, 3.0), (3.3, 5.0), duration_s=5.4)) == []
 
 
@@ -78,8 +79,8 @@ class SureAfter:
 
 def test_stops_listening_3_s_into_a_pause():
     # A firing more than 3 s after an EOT can never be a hit, so the model stops asking there.
-    assert AudioOnly(SureAfter(2.92), threshold=0.5).fire(side((1.0, 3.0))) == pytest.approx([5.95])
-    assert AudioOnly(SureAfter(3.01), threshold=0.5).fire(side((1.0, 3.0))) == []
+    assert AudioOnly(SureAfter(2.92), threshold=0.5, backstop_s=NO_BACKSTOP_S).fire(side((1.0, 3.0))) == pytest.approx([5.95])
+    assert AudioOnly(SureAfter(3.01), threshold=0.5, backstop_s=NO_BACKSTOP_S).fire(side((1.0, 3.0))) == []
 
 
 def test_features_are_the_window_mean_the_last_speech_frames_mean_and_the_silence():
@@ -116,20 +117,35 @@ class ChunkEncoder:
 
 def test_saved_model_loads_back_and_predicts_the_same(tmp_path):
     head = LogisticHead(weights=np.random.default_rng(0).standard_normal(5), bias=0.3)
-    model = AudioOnly(AudioClassifier(ChunkEncoder(), head), threshold=0.42)
+    model = AudioOnly(AudioClassifier(ChunkEncoder(), head), threshold=0.42, backstop_s=0.9)
     sound = np.random.default_rng(1).standard_normal((3, 16_000)).astype(np.float32)
     silence_s = np.array([0.0, 0.3, 1.2])
     path = tmp_path / "audio-only.json"
     save_audio_only(model, path)
     loaded = load_audio_only(path, encoder=ChunkEncoder())
-    assert loaded.threshold == 0.42
+    assert (loaded.threshold, loaded.backstop_s) == (0.42, 0.9)
     np.testing.assert_array_equal(loaded.classifier.p_eot(sound, silence_s), model.classifier.p_eot(sound, silence_s))
 
 
 def test_loading_with_a_different_encoder_fails(tmp_path):
     path = tmp_path / "audio-only.json"
-    save_audio_only(AudioOnly(AudioClassifier(ChunkEncoder(), LogisticHead(np.ones(5), 0.0)), threshold=0.5), path)
+    save_audio_only(AudioOnly(AudioClassifier(ChunkEncoder(), LogisticHead(np.ones(5), 0.0)), threshold=0.5, backstop_s=1.5), path)
     other = ChunkEncoder()
     other.name = "another encoder"
     with pytest.raises(ValueError, match="encoder"):
         load_audio_only(path, encoder=other)
+
+
+def test_fires_at_the_backstop_when_p_never_reaches_the_threshold():
+    model = AudioOnly(Oscillates(), threshold=0.95, backstop_s=1.15)
+    assert model.fire(side((1.0, 3.0), (5.0, 6.0))) == pytest.approx([4.15, 7.15])
+
+
+def test_the_backstop_fires_before_a_later_confident_step():
+    # P reaches 0.9 at 0.9 s of silence, but the 0.5 s backstop comes first.
+    assert AudioOnly(RisesWithSilence(), threshold=0.88, backstop_s=0.5).fire(side((1.0, 3.0))) == pytest.approx([3.5])
+
+
+def test_the_backstop_does_not_fire_once_the_user_resumes_or_the_conversation_ends():
+    model = AudioOnly(Oscillates(), threshold=0.95, backstop_s=1.15)
+    assert model.fire(side((1.0, 3.0), (4.0, 5.0), duration_s=6.0)) == []

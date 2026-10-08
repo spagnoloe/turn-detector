@@ -71,10 +71,11 @@ MODELS = {
         ),
         RegisteredModel(
             name=audio_only.NAME,
-            knob_names=("P_audio threshold",),
-            # Finer than the text-only model's: the strongly regularised head's P_audio is bunched
-            # near its threshold, where a step of 0.01 moves the false-cut-in rate by several points.
-            settings=[(i / 1000,) for i in range(1001)],
+            knob_names=("P_audio threshold", "backstop (ms)"),
+            # The threshold is finer than the text-only model's: the strongly regularised head's
+            # P_audio is bunched near its threshold, where a step of 0.01 moves the false-cut-in
+            # rate by several points. A threshold of 1 never fires early.
+            settings=[(i / 1000, float(ms)) for i in range(1001) for ms in range(200, 3001, 50)],
             fit=audio_only.fit,
             colour="#3a9e6a",
         ),

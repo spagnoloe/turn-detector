@@ -7,12 +7,13 @@ rule, at most once per pause and only while the user is still silent:
 
 - the audio-only model (requests with audio): fire as soon as P(EOT) >= the returned threshold;
 - the text-only model (requests without audio): fire once the ASR's text has arrived (200 ms into
-  the pause) if P(EOT) >= the returned threshold, or once the silence reaches the returned backstop.
+  the pause) if P(EOT) >= the returned threshold;
+- either way, fire once the silence reaches the returned backstop.
 
 The pauses are the gaps after the user's consensus segments, the same perfect pause detector the
 evaluation uses, so streaming fires where the model's own `fire` does, rounded up to the next 50
-ms step for the text-only model (the audio-only model already runs on that grid; its windows here
-are cut from audio resampled as a whole rather than window by window, a negligible difference).
+ms step (the audio-only model's confident firings are already on that grid; its windows here are
+cut from audio resampled as a whole rather than window by window, a negligible difference).
 The text sent at step t is what the ASR has finalised by t: segments that ended by t - 200 ms, and
 at most up to the pause start (the other speaker's speech during the user's pause is not a new
 agent turn), so it matches what the evaluated text model reads.

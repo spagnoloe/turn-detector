@@ -6,4 +6,4 @@ Development conversations, cross-validated: each speaker group is scored at the 
 |---|---|---:|---:|---:|---:|
 | baseline | silence timeout N (ms) | 1150 (1100–1250) | 0.853 | 0.098 | 1100 / 1150 / 1200 |
 | text-only | P_text threshold, backstop (ms) | 0.9, 1150 (0.86–0.9, 1100–1250) | 0.857 | 0.113 | 1100 / 1150 / 1200 |
-| audio-only | P_audio threshold | 0.937 (0.93–0.939) | 0.707 | 0.105 | 407 / 829 / 2419 |
+| audio-only | P_audio threshold, backstop (ms) | 0.946, 1500 (0.936–0.954, 1300–1600) | 0.866 | 0.113 | 506 / 1300 / 1500 |
