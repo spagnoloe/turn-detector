@@ -1,12 +1,12 @@
-"""Stress-test the running prediction API at several concurrency levels.
+"""Stress-test the running prediction API at several concurrency levels, for the model it serves.
 
 Requests are real: the payloads are what the orchestrator sends while streaming a held-out
 conversation (`turn_detector.streaming`): the last 1 s of 16 kHz audio, the transcript so far, the
 other speaker's previous turn and the silence duration, sampled across both speakers' pauses.
 At each level, Locust runs that many users, each sending requests back to back, so the level is
 the number of requests in flight. Statistics are reset once every user is running. It writes
-results/serving/stress_test.csv and stress_test.md: request latency p50/p95/p99 and throughput
-per level, as Locust measures them on the client.
+results/models/<model>/stress_test.csv and stress_test.md, for the model `/health` names: request
+latency p50/p95/p99 and throughput per level, as Locust measures them on the client.
 
     docker run --rm -p 8000:8000 turn-detector    # or: uv run uvicorn turn_detector.serving:app
     uv run python scripts/stress_test.py --setup "Docker, 4 CPUs, 4 workers"
@@ -22,14 +22,20 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from turn_detector.data import REPO_ROOT, load_audio
+import httpx2
+
+from turn_detector.data import load_audio
 from turn_detector.evaluation import load_conversations
+from turn_detector.models import MODELS
+from turn_detector.report import model_dir
 from turn_detector.split import load_split
 from turn_detector.streaming import pcm_16k, stream
 
-RESULTS_DIR = REPO_ROOT / "results" / "serving"
 LOCUSTFILE = Path(__file__).with_name("stress") / "locustfile.py"
 N_PAYLOADS = 200
+# Requests are sampled from the first 1.5 s of each pause, whatever model is served: a model
+# almost always fires within that (the text-only model's backstop is 1150 ms).
+SAMPLED_PAUSE_MS = 1500
 COLUMNS = ["concurrency", "requests", "failures", "throughput_rps", "p50_ms", "p95_ms", "p99_ms"]
 
 
@@ -40,8 +46,8 @@ def payloads(conversation_id: str, n: int) -> list[dict[str, Any]]:
 
     def record(payload: dict[str, Any]) -> dict[str, Any]:
         sent.append(payload)
-        # Never confident, so every pause is streamed up to the trained model's backstop.
-        return {"p_eot": 0.0, "threshold": 1.0, "backstop_ms": 1150}
+        # Never confident, so every pause is streamed for its first SAMPLED_PAUSE_MS.
+        return {"p_eot": 0.0, "threshold": 1.0, "backstop_ms": SAMPLED_PAUSE_MS}
 
     for side in conversation.sides:
         stream(side, record, pcm_16k(load_audio(conversation_id, side.speaker)))
@@ -71,9 +77,9 @@ def run_level(url: str, concurrency: int, duration_s: int, payload_path: Path, o
     }
 
 
-def markdown(rows: list[dict[str, Any]], setup: str, duration_s: int) -> str:
+def markdown(model: str, rows: list[dict[str, Any]], setup: str, duration_s: int) -> str:
     lines = [
-        "# Stress test: request latency and throughput",
+        f"# Stress test of the {model} model: request latency and throughput",
         "",
         f"Setup: {setup}. Each level ran for {duration_s} s after every user had started; Locust measured on the client.",
         "",
@@ -92,8 +98,12 @@ def main() -> None:
     parser.add_argument("--duration", type=int, default=30, help="seconds per level")
     parser.add_argument("--conversation", default=load_split().held_out[0], help="the held-out conversation to sample")
     parser.add_argument("--setup", required=True, help="what was tested, for the write-up (machine, CPUs, workers)")
-    parser.add_argument("--out", type=Path, default=RESULTS_DIR)
+    parser.add_argument("--out", type=Path, help="where to write the results (default: the model's results folder)")
     args = parser.parse_args()
+
+    model = httpx2.get(f"{args.url}/health").raise_for_status().json()["model"]
+    out = args.out or model_dir(MODELS[model])
+    print(f"stress-testing the {model} model at {args.url}")
 
     rows = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -103,13 +113,13 @@ def main() -> None:
             rows.append(run_level(args.url, concurrency, args.duration, payload_path, Path(tmp)))
             print(rows[-1])
 
-    args.out.mkdir(parents=True, exist_ok=True)
-    with open(args.out / "stress_test.csv", "w", newline="") as file:
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "stress_test.csv", "w", newline="") as file:
         writer = csv.DictWriter(file, COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
-    (args.out / "stress_test.md").write_text(markdown(rows, args.setup, args.duration))
-    print(markdown(rows, args.setup, args.duration))
+    (out / "stress_test.md").write_text(markdown(model, rows, args.setup, args.duration))
+    print(markdown(model, rows, args.setup, args.duration))
 
 
 if __name__ == "__main__":

@@ -8,27 +8,27 @@ _To be completed with the held-out evaluation (#9)._
 
 ## Serving and request latency
 
-The text-only model is served by a stateless FastAPI service in a CPU Docker image (see the [README](../README.md#serving)). The stress test sends real requests to the container with Locust, with each simulated caller sending requests back to back: the last 1 s of audio, the transcript so far, the previous turn and the silence duration, sampled from streaming a held-out conversation. Full table: [`results/serving/stress_test.md`](../results/serving/stress_test.md).
+The text-only model is served by a stateless FastAPI service in a CPU Docker image (see the [README](../README.md#serving)). The stress test sends real requests to the container with Locust, with each simulated caller sending requests back to back: the last 1 s of audio, the transcript so far, the previous turn and the silence duration, sampled from streaming a held-out conversation. Full table: [`results/models/text-only/stress_test.md`](../results/models/text-only/stress_test.md).
 
 | Requests in flight | Throughput (req/s) | p50 (ms) | p95 (ms) | p99 (ms) |
 |---:|---:|---:|---:|---:|
-| 1 | 70 | 17 | 18 | 22 |
-| 2 | 139 | 17 | 18 | 19 |
-| 4 | 215 | 22 | 23 | 25 |
-| 8 | 270 | 32 | 39 | 42 |
-| 16 | 274 | 56 | 90 | 100 |
-| 32 | 272 | 120 | 160 | 190 |
-| 64 | 256 | 250 | 350 | 400 |
+| 1 | 70 | 16 | 17 | 18 |
+| 2 | 135 | 17 | 18 | 19 |
+| 4 | 210 | 22 | 24 | 25 |
+| 8 | 259 | 31 | 42 | 45 |
+| 16 | 264 | 59 | 88 | 100 |
+| 32 | 256 | 120 | 190 | 210 |
+| 64 | 248 | 260 | 350 | 400 |
 
 Setup: 4 uvicorn workers with 1 encoder thread each, on Docker Desktop on a 10-core Apple M5 MacBook Air. Locust ran on the same laptop. No request failed.
 
-**Does the <100 ms target hold?** Yes, with margin, up to 8 requests in flight (p99 42 ms). At 16 requests in flight p99 reaches 100 ms, right at the limit, and beyond that the target fails. Throughput saturates at about 270 req/s from 8 requests in flight, so extra load only queues: p50 roughly doubles each time the load doubles.
+**Does the <100 ms target hold?** Yes, with margin, up to 8 requests in flight (p99 45 ms). At 16 requests in flight p99 reaches 100 ms, right at the limit, and beyond that the target fails. Throughput saturates at about 260 req/s from 8 requests in flight, so extra load only queues: p50 roughly doubles each time the load doubles.
 
 Figures in the next two points that are not in the table come from one-off spot checks, not recorded runs.
 
-- **A single request is fast.** It takes 17 ms end to end through the container, 8 ms measured inside it, and 4 ms against the same code running natively on macOS. The encoder dominates. On Linux, torch's CPU build uses OpenBLAS, about 3× slower than macOS's Accelerate for this model. Docker Desktop's port forwarding adds about 8 ms per request.
+- **A single request is fast.** It takes 16 ms end to end through the container, 8 ms measured inside it, and 4 ms against the same code running natively on macOS. The encoder dominates. On Linux, torch's CPU build uses OpenBLAS, about 3× slower than macOS's Accelerate for this model. Docker Desktop's port forwarding adds about 8 ms per request.
 - **The ceiling is the laptop, not the service.** With 8 workers instead of 4, the ceiling barely moves (≈290 req/s). Sending the same load from inside the container reaches about 390 req/s, and running natively reaches 640–730 req/s. On a Linux server, without Docker Desktop's VM and port forwarding, a container should do noticeably better. That has not been measured here.
-- **What that means in calls.** A call sends 20 requests per second while the user is silent. At 8 requests in flight (p99 42 ms), one laptop container serves about 13 calls in a pause at once. The load estimate in [How does it fit into a voice-agent architecture?](#how-does-it-fit-into-a-voice-agent-architecture) (about 1,400 req/s before peaks) would need roughly six such containers. More instances, behind a load balancer, keep each one below its knee.
+- **What that means in calls.** A call sends 20 requests per second while the user is silent. At 8 requests in flight (p99 45 ms), one laptop container serves about 13 calls in a pause at once. The load estimate in [How does it fit into a voice-agent architecture?](#how-does-it-fit-into-a-voice-agent-architecture) (about 1,400 req/s before peaks) would need roughly six such containers. More instances, behind a load balancer, keep each one below its knee.
 - **Cheap wins, not done here.** Batch concurrent requests into one encoder call. Export the encoder to ONNX Runtime or quantise it to int8. Skip the request entirely while the transcript hasn't changed since the last one, since the text model's output only changes when new words arrive. That alone removes most of the 20 requests per second.
 
 ## Assumptions

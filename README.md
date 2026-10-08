@@ -124,7 +124,7 @@ uv run python scripts/stress_test.py --setup "<machine, CPUs, workers>"
 
 `stream_conversation.py` streams both speakers of a held-out conversation through the API in 50 ms steps, sending real audio and transcripts. It prints each firing (when, how far into the pause, confident or backstop, `p_eot`) and the request latency the client saw. It shows no gold events or scores, since held-out conversations are scored only once, at the end.
 
-`stress_test.py` sends real requests sampled from that stream with [Locust](https://locust.io), at several concurrency levels. It writes request latency p50/p95/p99 and throughput per level to `results/serving/stress_test.{csv,md}`. The findings are in [`docs/solution.md`](docs/solution.md#serving-and-request-latency).
+`stress_test.py` sends real requests sampled from that stream with [Locust](https://locust.io), at several concurrency levels, to whichever model the server is serving. It writes request latency p50/p95/p99 and throughput per level to that model's `results/models/<model>/stress_test.{csv,md}`. The baseline has none: it is a silence timeout the caller applies itself, with no request to make. The findings are in [`docs/solution.md`](docs/solution.md#serving-and-request-latency).
 
 ## Tests
 
