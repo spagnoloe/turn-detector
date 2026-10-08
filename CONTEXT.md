@@ -34,3 +34,7 @@ _Avoid_: FPR, false positive rate
 **Firing**:
 The detector's single decision that the user's turn has ended and the agent should respond now; what gets scored, rather than the per-window probabilities.
 _Avoid_: trigger, detection
+
+**Barge-in**:
+The user starting to speak while the agent is speaking. In production, a barge-in within about 1 s of the agent starting is the main observable sign of a false cut-in.
+_Avoid_: interruption (TurnBench's interruption track is a different task)
