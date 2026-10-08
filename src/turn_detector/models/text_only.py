@@ -32,13 +32,14 @@ import numpy as np
 
 from turn_detector.data import ARTIFACTS_DIR
 from turn_detector.evaluation import EvaluationConversation
-from turn_detector.model import EPSILON_S, SpeakerSide
+from turn_detector.model import EPSILON_S, Setting, SpeakerSide
 from turn_detector.models.classified import (
     Fitted,
     LogisticHead,
     PredictionInputs,
     ScoredPause,
     Serving,
+    at_setting,
     check_encoder,
     firings,
     gold_pause_labels,
@@ -259,6 +260,11 @@ def load_text_only(path: Path = ARTIFACT_PATH, encoder: Encoder | None = None) -
     """The saved model, with its encoder loaded (or `encoder`, which must be the one it was trained on)."""
     stored = json.loads(path.read_text())
     return TextOnly(classifier_from_json(stored, encoder), stored["threshold"], stored["backstop_s"])
+
+
+def final(setting: Setting) -> TextOnly:
+    """The saved final model, which must be at `setting`, the one cross-validation chose."""
+    return at_setting(load_text_only(), setting)
 
 
 def labelled_pauses(conversation: EvaluationConversation) -> list[tuple[TextContext, bool]]:

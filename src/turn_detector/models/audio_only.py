@@ -36,7 +36,7 @@ from scipy.signal import resample_poly
 
 from turn_detector.data import ARTIFACTS_DIR, DATA_DIR, load_audio
 from turn_detector.evaluation import EvaluationConversation
-from turn_detector.model import EPSILON_S, HORIZON_S, STEP_S, Audio, SpeakerSide
+from turn_detector.model import EPSILON_S, HORIZON_S, STEP_S, Audio, Setting, SpeakerSide
 from turn_detector.models.classified import (
     Fitted,
     LogisticHead,
@@ -44,6 +44,7 @@ from turn_detector.models.classified import (
     ScoredPause,
     Serving,
     SideKey,
+    at_setting,
     check_encoder,
     firings,
     gold_pause_labels,
@@ -248,6 +249,15 @@ def load_audio_only(path: Path = ARTIFACT_PATH, encoder: Encoder | None = None) 
     was trained on)."""
     stored = json.loads(path.read_text())
     return AudioOnly(classifier_from_json(stored, encoder), stored["threshold"], stored["backstop_s"])
+
+
+def final(setting: Setting) -> AudioOnly:
+    """The saved final model, which must be at `setting`, the one cross-validation chose, with its
+    encoder on the GPU if there is one."""
+    import torch
+
+    encoder = Wav2Vec2Encoder(device="mps" if torch.backends.mps.is_available() else "cpu")
+    return at_setting(load_audio_only(encoder=encoder), setting)
 
 
 # Cached features. A side's features are kept for every 50 ms step the evaluation scores and every

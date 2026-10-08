@@ -2,6 +2,25 @@
 
 Decides, while a user is speaking to a voice agent, whether the user has finished their turn and the agent should respond. Domain terms are defined in [`CONTEXT.md`](CONTEXT.md); decisions are recorded in [`docs/adr/`](docs/adr/).
 
+The solution, its results, the assumptions behind them, the serving findings, the monitoring plan and the discussion are in [`docs/solution.md`](docs/solution.md). This README covers how to run everything.
+
+## Quick start
+
+From a fresh clone, after the one-time Hugging Face login described in [Data](#data):
+
+```bash
+uv sync                                          # dependencies
+uv run python scripts/download_data.py           # TurnBench dev set, about 4 GB
+uv run python scripts/evaluate.py baseline       # each model: train, sweep, cross-validate, save
+uv run python scripts/evaluate.py text-only
+uv run python scripts/evaluate.py audio-only     # about 15 min the first time (audio features)
+uv run python scripts/evaluate.py combined
+uv run pytest                                    # tests
+uv run uvicorn turn_detector.serving:app         # the API, on http://localhost:8000
+```
+
+The held-out results are already in `results/`; see [Held-out evaluation](#held-out-evaluation) for how they were produced and how to reproduce them.
+
 ## Setup
 
 Requires [uv](https://docs.astral.sh/uv/). Python 3.14 is installed by uv if missing.
@@ -83,20 +102,37 @@ This fits the model to the development conversations, sweeps its settings, one v
   - `cross_validation.json`: the setting chosen per fold and the pooled cross-validated scores;
   - `detection_latency_vs_false_cut_in_rate.png` and `recall_vs_false_cut_in_rate.png`: its sweep's frontier: at each false-cut-in rate, the best value any setting reaches.
 - `results/comparison/`, every model evaluated so far, rebuilt on each run:
-  - `results.md`: recall and detection latency at a false-cut-in rate of 0.10 or less, one row per model;
+  - `results.md`: recall and detection latency at a false-cut-in rate of 0.10 or less, one row per model (led by the held-out scores once they exist);
   - `detection_latency_vs_false_cut_in_rate.png` (main figure) and `recall_vs_false_cut_in_rate.png`: one line per model.
 
 - `artifacts/<model>/`, for a trained model: the final model at the chosen setting, trained on all development conversations, for serving. For the text-only model this is `text-only.json` (the head, its threshold and backstop, and the encoder's name), loaded back with `turn_detector.models.text_only.load_text_only`; for the audio-only model, `audio-only.json` (the head, its threshold and backstop, and the encoder's name and layer), loaded back with `turn_detector.models.audio_only.load_audio_only`; for the combined model, `combined.json` (all three heads, the threshold and backstop, and both encoders' names), loaded back with `turn_detector.models.combined.load_combined`.
 
 The audio-only model's encoder features are cached in the git-ignored `data/cache/audio-only/`, at every 50 ms step the evaluation scores and every training sample. The first run extracts them (about 100,000 windows, roughly 15 minutes on the laptop's GPU); later runs train the heads and sweep the threshold in seconds. The combined model reads the same cache, so run the audio-only model first.
 
-The script also prints the comparison table.
+The script also prints the comparison table. None of this touches the held-out conversations.
 
 A trained model's classifier is cross-fitted: the head that scores a conversation is trained on the other speaker groups only, the same folds the setting's cross-validation uses, so no conversation is scored by a head that saw it. The combined model's fusion head is cross-fitted the same way, nested: the one that scores a speaker group is trained on the other groups' probabilities, each from base heads trained without both groups. The setting for a fold is still chosen on the other folds' cross-fitted scores, whose heads did see that fold.
 
-The setting is chosen by cross-validation that leaves one speaker group out per fold (9 folds, [ADR 0003](docs/adr/0003-train-on-turnbench-dev.md)). Each fold picks the highest-recall setting within the 0.10 false-cut-in budget on the other folds (TurnBench's operating-point rule, ties to lower median latency), and the held-out folds' scores are pooled for the table. The figures show the sweep on all development conversations. The held-out conversations aren't scored.
+The setting is chosen by cross-validation that leaves one speaker group out per fold (9 folds, [ADR 0003](docs/adr/0003-train-on-turnbench-dev.md)). Each fold picks the highest-recall setting within the 0.10 false-cut-in budget on the other folds (TurnBench's operating-point rule, ties to the lower median detection latency), and the held-out folds' scores are pooled for the table. The figures show the sweep on all development conversations. The held-out conversations aren't scored here; see [Held-out evaluation](#held-out-evaluation).
 
 Scores come from TurnBench's own code: firings are checked with its submission validators and scored with its `score_task` against its gold, exactly as `turnbench.score` does, on the EOT task only. Each conversation is scored once per setting, and folds are sums of those scores. Two departures: the sweep covers a subset of conversations, where `turnbench.score` insists on the whole dev set, and ties between settings with equal recall go to the lower median detection latency, where `turnbench.sweep.operating_point` leaves them unbroken.
+
+## Held-out evaluation
+
+```bash
+uv run python scripts/evaluate_held_out.py
+```
+
+This scores the 12 held-out conversations once, with every model evaluated so far, in a single run. Each model is its final version: trained on all 26 development conversations and saved to `artifacts/<model>/` by `scripts/evaluate.py` (the baseline is just its timeout), at the setting chosen in cross-validation, read from `results/models/<model>/cross_validation.json`. A saved model at any other setting is refused, since its artifact would be stale. The audio is heard live, through the same code the API serves, not through the feature cache. It takes about 10 minutes on the laptop's GPU.
+
+It writes `results/models/<model>/held_out.json` and rebuilds `results/comparison/`: the table then leads with the held-out scores, next to the published TurnBench test-set results of VAP and Pipecat Smart Turn v3 as outside references, and the figures mark them (hollow squares for the held-out scores, grey triangles for the references).
+
+The held-out conversations are scored once, with no tuning afterwards, so the script refuses to run while any model has held-out scores. The committed results were produced this way. To reproduce them from a fresh clone, run the four evaluations above, then delete the committed scores and run it again:
+
+```bash
+rm results/models/*/held_out.json
+uv run python scripts/evaluate_held_out.py
+```
 
 ## Serving
 
@@ -128,6 +164,8 @@ docker run --rm -p 8000:8000 turn-detector
 
 ### Demo and stress test
 
+Both scripts talk to a running API (`uv run uvicorn turn_detector.serving:app` or the Docker container) at `http://localhost:8000` (`--url` to change it).
+
 ```bash
 uv run python scripts/stream_conversation.py   # streams a held-out conversation, prints the firings
 uv run python scripts/stress_test.py --setup "<machine, CPUs, workers>"              # audio and text requests
@@ -145,3 +183,5 @@ uv run python scripts/stress_test.py --setup "<machine, CPUs, workers>" --no-aud
 uv run pytest
 uv run ty check src tests scripts   # typecheck
 ```
+
+The tests use synthetic conversations and stub encoders, so they need neither the dataset nor the trained models, and run in seconds.

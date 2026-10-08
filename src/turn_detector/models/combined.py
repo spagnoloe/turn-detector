@@ -32,7 +32,7 @@ import numpy as np
 
 from turn_detector.data import ARTIFACTS_DIR
 from turn_detector.evaluation import EvaluationConversation
-from turn_detector.model import EPSILON_S, SpeakerSide
+from turn_detector.model import EPSILON_S, Setting, SpeakerSide
 from turn_detector.models import audio_only, text_only
 from turn_detector.models.audio_only import TRAINED_PAUSE_S, AudioClassifier, AudioTraining, Wav2Vec2Encoder, heard_pauses
 from turn_detector.models.classified import (
@@ -42,6 +42,7 @@ from turn_detector.models.classified import (
     ScoredPause,
     Serving,
     SideKey,
+    at_setting,
     cross_fitted,
     firings,
     gold_pause_labels,
@@ -152,6 +153,15 @@ def load_combined(
         head_from_json(stored["fusion"]),
     )
     return Combined(classifier, stored["threshold"], stored["backstop_s"])
+
+
+def final(setting: Setting) -> Combined:
+    """The saved final model, which must be at `setting`, the one cross-validation chose, with its
+    audio encoder on the GPU if there is one."""
+    import torch
+
+    encoder = Wav2Vec2Encoder(device="mps" if torch.backends.mps.is_available() else "cpu")
+    return at_setting(load_combined(audio_encoder=encoder), setting)
 
 
 @dataclass

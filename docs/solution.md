@@ -2,9 +2,76 @@
 
 Domain terms (EOT, mid-turn pause, firing, false cut-in, detection latency, request latency, …) are defined in [`CONTEXT.md`](../CONTEXT.md). Decisions are recorded in [`docs/adr/`](adr/).
 
+## Summary
+
+The detector decides, during each pause in the user's speech, whether the user has finished their turn. Four models are compared on the TurnBench dev set (38 two-channel conversations, about 7 h), split by speaker into 26 development and 12 held-out conversations ([ADR 0003](adr/0003-train-on-turnbench-dev.md)):
+
+- **baseline**: a silence timeout, which is what plain VAD achieves;
+- **text-only**: a frozen MiniLM sentence encoder and a logistic-regression head over the transcript so far;
+- **audio-only**: a frozen wav2vec2-base encoder and a logistic-regression head over the last 1 s of audio, every 50 ms;
+- **combined**: late fusion of the two probabilities and the silence duration.
+
+Each trained model fires when its P(EOT) reaches a threshold, or else at a silence backstop. The two knobs are chosen by cross-validation with one speaker group held out per fold, using TurnBench's rule: the highest recall at a false-cut-in rate of 0.10 or less. Everything is scored with TurnBench's own EOT scorer. The models are served by a stateless FastAPI service in a CPU Docker image and stress-tested with Locust. How to run all of it is in the [README](../README.md).
+
+**Result: on the held-out conversations, no trained model beats the silence timeout.** All four reach a recall of 0.85–0.88. All four also exceed the 0.10 false-cut-in budget (0.125–0.142), because the held-out speakers pause longer within their turns than the development speakers. The audio-only model is the only one that fires early with any regularity (p10 detection latency 551 ms), but its later backstop costs median latency. Text-only requests meet the <100 ms request-latency target on the laptop. Audio requests do not (about 130 ms alone), a limitation of running everything on one MacBook Air ([ADR 0002](adr/0002-laptop-only-compute.md)).
+
 ## Results
 
-_To be completed with the held-out evaluation (#9)._
+### Held-out conversations
+
+The 12 held-out conversations were scored once, in a single run (`scripts/evaluate_held_out.py`), with no tuning afterwards. Each model is its final version, trained on all 26 development conversations, at the setting chosen in cross-validation. The audio is heard through the same code the API serves. Full table: [`results/comparison/results.md`](../results/comparison/results.md).
+
+| Model | Setting | Recall | False-cut-in rate | Detection latency p10 / p50 / p90 (ms) |
+|---|---|---:|---:|---:|
+| baseline | timeout 1150 ms | 0.877 | 0.142 | 1150 / 1150 / 1150 |
+| text-only | P_text ≥ 0.9, backstop 1150 ms | 0.881 | 0.142 | 1150 / 1150 / 1150 |
+| audio-only | P_audio ≥ 0.946, backstop 1500 ms | 0.854 | 0.125 | 551 / 1500 / 1500 |
+| combined | P ≥ 0.926, backstop 1150 ms | 0.877 | 0.142 | 1150 / 1150 / 1150 |
+| *VAP (published, TurnBench test set)* | | *0.845* | *0.055* | *−57 / 368 / 1537* |
+| *Pipecat Smart Turn v3 (published, TurnBench test set)* | | *0.752* | *0.047* | *729 / 1017 / 1175* |
+
+**These are the only clean numbers.** The audio model's encoder layer (8) and regularisation (C = 1e-4) were each picked once, on a third of the development conversations. The cross-validated development numbers below are therefore slightly optimistic for the audio-only and combined models. The held-out conversations played no part in any choice.
+
+**They are uncertain.** The held-out set has 512 EOTs and 352 mid-turn pauses. A 95% binomial interval is about ±0.03 on recall and ±0.04 on the false-cut-in rate, and wider in truth, since the pauses of one conversation are correlated. The recall differences between the models are inside that.
+
+**The published rows are outside references, not a like-for-like comparison:**
+
+- They are scored on TurnBench's test set, a different and larger split, at an operating point chosen on the whole dev set. The numbers come from TurnBench's `results/leaderboard-test.json` at the commit this project pins.
+- They are trained on far more data. VAP was trained on Switchboard and Fisher, then fine-tuned on TurnBench's 104 h training set. Smart Turn v3 was trained on Pipecat's own turn-completion data. Ours saw about 5 h.
+- They find pauses in the audio themselves. Our models are given the annotators' segment ends (a perfect VAD) and, for text, human transcripts (a perfect ASR). This favours our models.
+
+Even with that advantage, VAP reaches a similar recall at well under half the false-cut-in rate and a median detection latency of 368 ms. That is the region a production detector should aim for, and none of the models here gets close to it.
+
+### What the held-out results show
+
+Counts of confident and backstop firings below come from a one-off diagnostic run after the held-out evaluation, which re-applied each saved model's firing rule to the held-out conversations without changing anything. They are not in a recorded results file.
+
+- **The false-cut-in budget did not transfer.** The same 1150 ms timeout cuts in on 9.8% of the development conversations' mid-turn pauses and on 14.2% of the held-out ones. The held-out speakers simply pause longer mid-turn. A threshold tuned on 26 conversations fixes the firing rule, not the false-cut-in rate, which depends on how the speakers pause. In production that calls for per-deployment calibration and monitoring of the false-cut-in proxy (see [Monitoring in production](#monitoring-in-production)).
+- **Text-only is the baseline in practice.** Of its 545 held-out firings, 5 were confident (P_text ≥ 0.9, 200 ms into the pause) and 540 came from the backstop. Those 5 firings gained 2 EOTs, which is not a measurable difference. This matches the development finding that its head ranks EOTs above mid-turn pauses barely better than chance (see [Why the text model barely beats the baseline](#what-are-the-limits-of-the-current-solution)).
+- **Combined is the baseline exactly.** Its final fusion head never reached the 0.926 threshold on the held-out conversations: all 543 firings came from its 1150 ms backstop, the baseline's timeout. The threshold was chosen on the cross-fitted fusion heads' probabilities, which did reach it on development (p10 detection latency 569 ms). The final head, trained on all development conversations, is a different head, and its probabilities stay below the threshold: on the held-out conversations, and also on a development conversation checked by hand (maximum 0.91). The per-fold thresholds already ranged from 0.894 to 0.926, so the head's probabilities sit close to the threshold, and a small shift turns every early firing off. Thresholding this head so close to its ceiling is fragile. In production it would show up as a rising backstop share.
+- **Audio-only is the only model that fires early.** 194 of its 525 held-out firings were confident, and its p10 detection latency, 551 ms, is close to its cross-validated 506 ms. That carries over from development. But its chosen backstop is 1500 ms, so the other firings wait longer than the baseline's, and its median detection latency is 1500 ms against 1150 ms. Its false-cut-in rate is lower (0.125 against 0.142) and its recall lower too (0.854 against 0.877). Whether that is a better trade-off than the baseline's cannot be told from one point each, and the held-out set is scored only once, so there is no held-out sweep to compare them on.
+- **The expectation in [Audio, text, combined, or VAD?](#audio-text-combined-or-vad) holds only in part.** Audio is the modality that buys early firings. With these small frozen encoders and 26 conversations of training data, it does not buy enough to beat a well-tuned timeout at TurnBench's operating point.
+
+### Development conversations, cross-validated
+
+Leave-one-speaker-group-out cross-validation over the 26 development conversations (9 folds). Each fold is scored at the setting chosen without it, and the folds are pooled. Each setting met the 0.10 budget on the folds it was chosen on, but the pooled false-cut-in rate of the trained models ends up above it (0.113–0.122): the budget does not fully carry over even between development speaker groups. These numbers chose the settings above, and are slightly optimistic for the audio-only and combined models (see above).
+
+| Model | Setting chosen (per-fold range) | Recall | False-cut-in rate | Detection latency p10 / p50 / p90 (ms) |
+|---|---|---:|---:|---:|
+| baseline | 1150 ms (1100–1250) | 0.853 | 0.098 | 1100 / 1150 / 1200 |
+| text-only | 0.9, 1150 ms (0.86–0.9, 1100–1250) | 0.857 | 0.113 | 1100 / 1150 / 1200 |
+| audio-only | 0.946, 1500 ms (0.936–0.954, 1300–1600) | 0.866 | 0.113 | 506 / 1300 / 1500 |
+| combined | 0.926, 1150 ms (0.894–0.926, 1100–1500) | 0.856 | 0.122 | 569 / 1150 / 1500 |
+
+The figures show each model's development sweep: at each false-cut-in rate, the best value any setting reaches. Filled dots mark the chosen settings, hollow squares the held-out scores, and grey triangles the published references.
+
+![Median detection latency against false-cut-in rate](../results/comparison/detection_latency_vs_false_cut_in_rate.png)
+
+![Recall against false-cut-in rate](../results/comparison/recall_vs_false_cut_in_rate.png)
+
+### Request latency
+
+Text-only requests meet the <100 ms target with margin, up to 8 requests in flight (p99 45 ms). **Audio and combined requests miss it** on the laptop container: about 130 ms and 140 ms even alone. This is a limitation of running everything on one MacBook Air ([ADR 0002](adr/0002-laptop-only-compute.md)): Docker Desktop's Linux VM, torch's slower Linux CPU build, one CPU thread per worker and no GPU. The same encoder takes about 24 ms per window natively on macOS. The reasons and the production fixes (GPU or an optimised CPU runtime, batching, a smaller encoder, streaming over a WebSocket) are in [Serving and request latency](#serving-and-request-latency).
 
 ## Serving and request latency
 
@@ -83,7 +150,31 @@ Full table: [`results/models/combined/stress_test.md`](../results/models/combine
 
 ## Assumptions
 
-_To be completed with the held-out evaluation (#9)._
+Every result above rests on these. The first four make our numbers look better than a deployed detector would do.
+
+**Inputs.**
+
+- **Human transcripts instead of ASR.** The text model reads the annotators' transcripts, not a streaming ASR's. To make them look more like ASR output, bracketed tags such as `[laughs]` are stripped and fillers such as "um" are kept. Real ASR errors and unstable partial transcripts would make the text model worse.
+- **Annotation segment ends instead of a real VAD.** Every model's pauses, and the silence duration the audio model reads, come from the annotators' 2-of-3 consensus segments: a perfect pause detector. A real VAD misses pauses, splits words and reacts late.
+- **A fixed 200 ms ASR lag.** A segment's text becomes readable 200 ms after the segment ends, so the text model cannot fire earlier than that. Real ASR lag varies with the vendor and the utterance.
+- **Gold events need 2-of-3 annotator agreement.** Pauses the annotators disagree on are neither trained on nor scored, and those are the hardest ones.
+
+**Firing rule and tuning.**
+
+- **Backstops.** Every trained model also fires at a silence backstop if its P(EOT) never reaches the threshold. The backstop is tuned together with each model's threshold, so a trained model can always fall back to the baseline's timeout on the data it is tuned on.
+- **The operating point is TurnBench's.** The highest recall at a false-cut-in rate of 0.10 or less, with ties going to the lower median detection latency. It is chosen by cross-validation that leaves one speaker group out per fold.
+- **Choices made on development data.** The audio model's encoder layer (8) and regularisation (C = 1e-4) were each picked once, by out-of-fold AUC, on a third of the development conversations. The cross-validated development numbers are therefore slightly optimistic for the audio-only and combined models. Only the held-out numbers are clean.
+
+**Data.**
+
+- **Training on the dev set** ([ADR 0003](adr/0003-train-on-turnbench-dev.md)). TurnBench's 104 h training set needs licence approval for commercial use, so all training and evaluation use its 7 h dev set, split by speaker into 26 development and 12 held-out conversations. Our scores are therefore not official TurnBench dev scores, and they are not directly comparable with published results.
+- **English only.** Both encoders are English, and so is the data. See [Multilingual extension](#multilingual-extension).
+- **Actors, not callers.** The speakers are actors doing role-play on clean wideband audio, resampled from 48 kHz to 16 kHz. Production calls are 8 kHz telephony with noise.
+
+**Compute and architecture.**
+
+- **One laptop** ([ADR 0002](adr/0002-laptop-only-compute.md)). Training, evaluation, serving and the stress test all ran on one MacBook Air. That is why the encoders are small and frozen and only the heads are trained, and why audio request latency misses the <100 ms target.
+- **ASR outside the detector** ([ADR 0001](adr/0001-asr-outside-the-detector.md)). The detector receives the transcript and does not run an ASR itself.
 
 ## Monitoring in production
 
