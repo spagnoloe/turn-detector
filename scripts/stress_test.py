@@ -13,9 +13,9 @@ per level, as Locust measures them on the client.
 """
 
 import argparse
-import os
 import csv
 import json
+import os
 import random
 import subprocess
 import tempfile
@@ -34,17 +34,18 @@ COLUMNS = ["concurrency", "requests", "failures", "throughput_rps", "p50_ms", "p
 
 
 def payloads(conversation_id: str, n: int) -> list[dict[str, Any]]:
-    """`n` of the requests streaming this conversation sends, sampled evenly at random."""
+    """`n` of the requests streaming this conversation sends (all of them if fewer), sampled at random."""
     [conversation] = load_conversations([conversation_id])
     sent = []
 
     def record(payload: dict[str, Any]) -> dict[str, Any]:
         sent.append(payload)
-        return {"p_eot": 0.0, "threshold": 1.0, "backstop_ms": 1150}  # never fires early: every pause is streamed
+        # Never confident, so every pause is streamed up to the trained model's backstop.
+        return {"p_eot": 0.0, "threshold": 1.0, "backstop_ms": 1150}
 
     for side in conversation.sides:
         stream(side, record, pcm_16k(load_audio(conversation_id, side.speaker)))
-    return random.Random(0).sample(sent, n)
+    return random.Random(0).sample(sent, min(n, len(sent)))
 
 
 def run_level(url: str, concurrency: int, duration_s: int, payload_path: Path, out_dir: Path) -> dict[str, Any]:

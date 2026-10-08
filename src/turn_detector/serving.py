@@ -23,9 +23,9 @@ from pydantic import BaseModel, Field, field_validator
 from turn_detector.models.text_only import TextContext, TextOnly, load_text_only
 
 AUDIO_SAMPLE_RATE = 16_000
-AUDIO_WINDOW_S = 1.0
 # The last 1 s of the user's channel: 16 kHz mono 16-bit little-endian PCM.
-AUDIO_BYTES = int(AUDIO_SAMPLE_RATE * AUDIO_WINDOW_S) * 2
+AUDIO_SAMPLES = AUDIO_SAMPLE_RATE
+AUDIO_BYTES = AUDIO_SAMPLES * 2
 
 
 class PredictRequest(BaseModel):

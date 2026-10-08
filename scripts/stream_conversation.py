@@ -33,13 +33,13 @@ def main() -> None:
     args = parser.parse_args()
 
     [conversation] = load_conversations([args.conversation])
-    latencies_ms = []
+    request_latencies_ms = []
     with httpx2.Client(base_url=args.url, timeout=5.0) as client:
 
         def predict(payload: dict) -> dict:
             start = time.perf_counter()
             response = client.post("/predict", json=payload).raise_for_status()
-            latencies_ms.append((time.perf_counter() - start) * 1000)
+            request_latencies_ms.append((time.perf_counter() - start) * 1000)
             return response.json()
 
         print(f"serving {client.get('/health').raise_for_status().json()['model']} at {args.url}")
@@ -54,8 +54,8 @@ def main() -> None:
                     f"  {firing.reason:9}  p_eot {firing.p_eot:.2f}"
                 )
 
-    p50, p95, p99 = np.percentile(latencies_ms, [50, 95, 99])
-    print(f"\n{len(latencies_ms)} requests, request latency (client-side) p50 {p50:.1f} / p95 {p95:.1f} / p99 {p99:.1f} ms")
+    p50, p95, p99 = np.percentile(request_latencies_ms, [50, 95, 99])
+    print(f"\n{len(request_latencies_ms)} requests, request latency (client-side) p50 {p50:.1f} / p95 {p95:.1f} / p99 {p99:.1f} ms")
 
 
 if __name__ == "__main__":

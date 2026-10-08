@@ -13,6 +13,7 @@ The text-only model is served by a stateless FastAPI service in a CPU Docker ima
 | Requests in flight | Throughput (req/s) | p50 (ms) | p95 (ms) | p99 (ms) |
 |---:|---:|---:|---:|---:|
 | 1 | 70 | 17 | 18 | 22 |
+| 2 | 139 | 17 | 18 | 19 |
 | 4 | 215 | 22 | 23 | 25 |
 | 8 | 270 | 32 | 39 | 42 |
 | 16 | 274 | 56 | 90 | 100 |
@@ -21,7 +22,9 @@ The text-only model is served by a stateless FastAPI service in a CPU Docker ima
 
 Setup: 4 uvicorn workers with 1 encoder thread each, on Docker Desktop on a 10-core Apple M5 MacBook Air. Locust ran on the same laptop. No request failed.
 
-**Does the <100 ms target hold?** Yes, up to about 16 requests in flight, where p99 reaches 100 ms. Beyond that it does not. Throughput saturates at about 270 req/s from 8 requests in flight, so extra load only queues: p50 roughly doubles each time the load doubles.
+**Does the <100 ms target hold?** Yes, with margin, up to 8 requests in flight (p99 42 ms). At 16 requests in flight p99 reaches 100 ms, right at the limit, and beyond that the target fails. Throughput saturates at about 270 req/s from 8 requests in flight, so extra load only queues: p50 roughly doubles each time the load doubles.
+
+Figures in the next two points that are not in the table come from one-off spot checks, not recorded runs.
 
 - **A single request is fast.** It takes 17 ms end to end through the container, 8 ms measured inside it, and 4 ms against the same code running natively on macOS. The encoder dominates. On Linux, torch's CPU build uses OpenBLAS, about 3× slower than macOS's Accelerate for this model. Docker Desktop's port forwarding adds about 8 ms per request.
 - **The ceiling is the laptop, not the service.** With 8 workers instead of 4, the ceiling barely moves (≈290 req/s). Sending the same load from inside the container reaches about 390 req/s, and running natively reaches 640–730 req/s. On a Linux server, without Docker Desktop's VM and port forwarding, a container should do noticeably better. That has not been measured here.

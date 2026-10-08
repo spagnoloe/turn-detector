@@ -5,10 +5,11 @@ named by STRESS_PAYLOADS, written by scripts/stress_test.py."""
 import json
 import os
 import random
+from pathlib import Path
 
 from locust import FastHttpUser, constant, task
 
-PAYLOADS = json.loads(open(os.environ["STRESS_PAYLOADS"]).read())
+PAYLOADS = json.loads(Path(os.environ["STRESS_PAYLOADS"]).read_text())
 
 
 class Orchestrator(FastHttpUser):

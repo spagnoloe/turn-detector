@@ -24,7 +24,7 @@ from scipy.signal import resample_poly
 
 from turn_detector.model import Audio, SpeakerSide, next_speech_start
 from turn_detector.models.text_only import ASR_LAG_S, text_context
-from turn_detector.serving import AUDIO_SAMPLE_RATE, AUDIO_WINDOW_S
+from turn_detector.serving import AUDIO_SAMPLE_RATE, AUDIO_SAMPLES
 
 STEP_S = 0.05
 EPSILON_S = 1e-6  # steps are on a float grid; compare times with this much slack
@@ -51,9 +51,8 @@ def audio_window(samples: np.ndarray, t: float) -> bytes:
     """The last 1 s of 16 kHz 16-bit samples before `t`, as little-endian PCM, left-padded with
     silence near the start of the call."""
     end = round(t * AUDIO_SAMPLE_RATE)
-    size = round(AUDIO_WINDOW_S * AUDIO_SAMPLE_RATE)
-    window = samples[max(0, end - size) : end].astype("<i2")
-    return np.concatenate([np.zeros(size - len(window), "<i2"), window]).tobytes()
+    window = samples[max(0, end - AUDIO_SAMPLES) : end].astype("<i2")
+    return np.concatenate([np.zeros(AUDIO_SAMPLES - len(window), "<i2"), window]).tobytes()
 
 
 def steps(start: float, until: float) -> Iterator[float]:
