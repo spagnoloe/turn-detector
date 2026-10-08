@@ -15,10 +15,12 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 
-from turn_detector.model import Audio, Model, Segment, SpeakerSide
+from turn_detector.model import EPSILON_S, Audio, Model, Segment, SpeakerSide
 from turn_detector.models.audio_only import AudioOnly
 from turn_detector.models.baseline import Baseline
-from turn_detector.models.text_only import TextContext, TextOnly
+from turn_detector.models.classified import pauses
+from turn_detector.models.combined import Combined
+from turn_detector.models.text_only import ASR_LAG_S, TextContext, TextOnly, text_context
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,17 @@ class ProjectionClassifier:
         return (np.sin(windows @ projection * 1e3 + silence_s * 7919) + 1) / 2
 
 
+@dataclass(frozen=True)
+class FusedHashClassifier:
+    """A stand-in for the combined classifier whose P(EOT) changes with any change to its window,
+    the text it reads or the silence duration."""
+
+    def p_eot(self, windows: np.ndarray, contexts: Sequence[TextContext], silence_s: np.ndarray) -> np.ndarray:
+        p_audio = ProjectionClassifier().p_eot(windows, silence_s)
+        p_text = np.array(HashClassifier().p_eot(contexts))
+        return (p_audio + p_text) % 1.0
+
+
 MODELS_UNDER_TEST: list[Model] = [
     Baseline(timeout_ms=200),
     Baseline(timeout_ms=1000),
@@ -46,6 +59,8 @@ MODELS_UNDER_TEST: list[Model] = [
     TextOnly(HashClassifier(), threshold=0.3, backstop_s=0.4),
     AudioOnly(ProjectionClassifier(), threshold=0.9, backstop_s=1.5),
     AudioOnly(ProjectionClassifier(), threshold=0.99, backstop_s=0.4),
+    Combined(FusedHashClassifier(), threshold=0.9, backstop_s=1.5),
+    Combined(FusedHashClassifier(), threshold=0.99, backstop_s=0.4),
 ]
 
 DURATION_S = 30.0
@@ -144,3 +159,35 @@ class PeeksAhead:
 def test_the_check_catches_a_model_that_peeks_ahead():
     with pytest.raises(AssertionError, match="changed when the future changed"):
         assert_causal(PeeksAhead())
+
+
+@dataclass
+class ReadsText:
+    """Never fires; remembers the text read at each step."""
+
+    read: list[TextContext]
+
+    def p_eot(self, windows: np.ndarray, contexts: Sequence[TextContext], silence_s: np.ndarray) -> np.ndarray:
+        self.read.extend(contexts)
+        return np.zeros(len(contexts))
+
+
+def test_the_combined_model_reads_new_text_only_at_segment_ends_after_the_asr_lag():
+    rng = random.Random(1)
+    for _ in range(30):
+        side = random_side(rng)
+        reader = ReadsText([])
+        Combined(reader, threshold=0.5, backstop_s=4.0).fire(side)
+        times = [t for pause in pauses(side) for t in pause.steps]
+        ends = sorted({segment.end for segment in side.segments})
+        assert len(reader.read) == len(times)
+
+        def delivered(t: float) -> list[float]:
+            return [end for end in ends if end <= t - ASR_LAG_S + EPSILON_S]
+
+        for t, context in zip(times, reader.read):
+            # Only text the ASR has delivered: the context at a segment end at least 200 ms ago.
+            assert context in [TextContext("", ""), *(text_context(side, end) for end in delivered(t))]
+        for (t1, before), (t2, after) in zip(zip(times, reader.read), zip(times[1:], reader.read[1:])):
+            # It changes only when another segment end's text arrives.
+            assert before == after or len(delivered(t2)) > len(delivered(t1))

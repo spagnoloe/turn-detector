@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from turn_detector.model import Audio, Segment, SpeakerSide
-from turn_detector.models.text_only import LogisticHead
+from turn_detector.models.classified import LogisticHead
 from turn_detector.models.audio_only import (
     AudioClassifier,
     AudioOnly,

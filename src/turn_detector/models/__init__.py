@@ -2,7 +2,9 @@
 
 Each model lives in its own module here. MODELS registers it for `scripts/evaluate.py`: how to fit
 it to the development conversations, its knobs, the settings to sweep, and its colour in the
-comparison figures. Everything model-specific is in this package; the rest of `turn_detector` is
+comparison figures. What the trained models share (their firing rule, cross-fitting, saving and
+how the API serves them) is in `classified`, and each trained model's `SERVING` describes which
+requests it answers. Everything model-specific is in this package; the rest of `turn_detector` is
 shared by every model.
 """
 
@@ -12,7 +14,7 @@ from pathlib import Path
 
 from turn_detector.evaluation import EvaluationConversation
 from turn_detector.model import Fitted, Model, Setting
-from turn_detector.models import audio_only, text_only
+from turn_detector.models import audio_only, combined, text_only
 from turn_detector.models.baseline import Baseline
 
 
@@ -78,6 +80,14 @@ MODELS = {
             settings=[(i / 1000, float(ms)) for i in range(1001) for ms in range(200, 3001, 50)],
             fit=audio_only.fit,
             colour="#3a9e6a",
+        ),
+        RegisteredModel(
+            name=combined.NAME,
+            knob_names=("P_combined threshold", "backstop (ms)"),
+            # The audio-only model's settings, so the two are compared at the same firing rule.
+            settings=[(i / 1000, float(ms)) for i in range(1001) for ms in range(200, 3001, 50)],
+            fit=combined.fit,
+            colour="#8a5cc2",
         ),
     ]
 }

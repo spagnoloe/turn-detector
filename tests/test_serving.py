@@ -1,4 +1,4 @@
-"""The prediction API over HTTP, serving the text-only and audio-only models with stub classifiers."""
+"""The prediction API over HTTP, serving the text-only, audio-only and combined models with stub classifiers."""
 
 import base64
 from collections.abc import Sequence
@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from turn_detector.models.audio_only import AudioOnly
+from turn_detector.models.combined import Combined
 from turn_detector.models.text_only import TextContext, TextOnly
 from turn_detector.serving import AUDIO_BYTES, create_app
 
@@ -35,6 +36,19 @@ class AudioStub:
         return np.minimum(np.abs(windows).max(axis=1), 1.0)
 
 
+@dataclass
+class CombinedStub:
+    """P(EOT) = the mean of the window's loudest sample (capped at 1) and the text stub's P; remembers
+    what it heard and read."""
+
+    heard: list[tuple[np.ndarray, TextContext, float]]
+
+    def p_eot(self, windows: np.ndarray, contexts: Sequence[TextContext], silence_s: np.ndarray) -> np.ndarray:
+        self.heard.extend(zip(windows, contexts, silence_s.tolist()))
+        p_text = np.array([0.9 if context.turn_so_far.endswith(".") else 0.1 for context in contexts])
+        return (np.minimum(np.abs(windows).max(axis=1), 1.0) + p_text) / 2
+
+
 @pytest.fixture
 def stub():
     return Stub([])
@@ -46,12 +60,21 @@ def audio_stub():
 
 
 @pytest.fixture
-def client(stub, audio_stub):
-    app = create_app(
-        load_text=lambda: TextOnly(stub, threshold=0.6, backstop_s=1.15),
-        load_audio=lambda: AudioOnly(audio_stub, threshold=0.7, backstop_s=0.85),
-    )
-    with TestClient(app) as client:
+def combined_stub():
+    return CombinedStub([])
+
+
+def models(stub, audio_stub, combined_stub):
+    return [
+        TextOnly(stub, threshold=0.6, backstop_s=1.15),
+        AudioOnly(audio_stub, threshold=0.7, backstop_s=0.85),
+        Combined(combined_stub, threshold=0.65, backstop_s=1.0),
+    ]
+
+
+@pytest.fixture
+def client(stub, audio_stub, combined_stub):
+    with TestClient(create_app(load=lambda: models(stub, audio_stub, combined_stub))) as client:
         yield client
 
 
@@ -66,7 +89,7 @@ def pcm(samples: np.ndarray) -> str:
 def test_health(client):
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "models": ["text-only", "audio-only"]}
+    assert response.json() == {"status": "ok", "models": ["text-only", "audio-only", "combined"]}
 
 
 def test_text_requests_return_p_eot_and_the_text_models_firing_rule_settings(client):
@@ -75,13 +98,35 @@ def test_text_requests_return_p_eot_and_the_text_models_firing_rule_settings(cli
     assert response.json() == {"p_eot": 0.9, "threshold": 0.6, "backstop_ms": 1150, "model": "text-only"}
 
 
-def test_requests_with_audio_are_answered_by_the_audio_model(client):
+def test_requests_with_audio_and_a_transcript_are_answered_by_the_combined_model(client):
     samples = np.zeros(16_000)
     samples[100] = 16384  # half of full scale
     response = client.post(
         "/predict",
         json={"audio": pcm(samples), "transcript": "To Barcelona.", "previous_turn": "Where to?", "silence_ms": 250},
     )
+    assert response.status_code == 200
+    assert response.json() == {"p_eot": 0.7, "threshold": 0.65, "backstop_ms": 1000, "model": "combined"}
+
+
+def test_an_empty_transcript_is_still_a_transcript(client):
+    response = client.post("/predict", json={"audio": audio(), "transcript": "", "silence_ms": 0})
+    assert response.json()["model"] == "combined"
+    assert 0 <= response.json()["p_eot"] <= 1
+
+
+def test_the_combined_model_hears_the_window_and_the_silence_and_reads_the_text(client, combined_stub):
+    samples = np.linspace(-32768, 32767, 16_000).astype(np.int16)
+    client.post("/predict", json={"audio": pcm(samples), "transcript": "To Barcelona,", "previous_turn": "Where to?", "silence_ms": 250})
+    [(window, context, silence_s)] = combined_stub.heard[-1:]
+    np.testing.assert_allclose(window, samples / 32768)
+    assert (context, silence_s) == (TextContext("Where to?", "To Barcelona,"), 0.25)
+
+
+def test_requests_with_audio_and_no_transcript_are_answered_by_the_audio_model(client):
+    samples = np.zeros(16_000)
+    samples[100] = 16384  # half of full scale
+    response = client.post("/predict", json={"audio": pcm(samples), "previous_turn": "Where to?", "silence_ms": 250})
     assert response.status_code == 200
     assert response.json() == {"p_eot": 0.5, "threshold": 0.7, "backstop_ms": 850, "model": "audio-only"}
 
@@ -130,19 +175,22 @@ def test_negative_silence_is_rejected(client):
     assert client.post("/predict", json={"transcript": "Hi.", "silence_ms": -50}).status_code == 422
 
 
-def test_the_models_are_loaded_once_at_startup(stub, audio_stub):
+def test_the_models_are_loaded_once_at_startup(stub, audio_stub, combined_stub):
     loads = []
 
-    def load_text():
-        loads.append("text")
-        return TextOnly(stub, threshold=0.6, backstop_s=1.15)
+    def load():
+        loads.append("models")
+        return models(stub, audio_stub, combined_stub)
 
-    def load_audio():
-        loads.append("audio")
-        return AudioOnly(audio_stub, threshold=0.7, backstop_s=0.85)
-
-    with TestClient(create_app(load_text=load_text, load_audio=load_audio)) as client:
-        assert loads == ["text", "audio"]  # before any request
+    with TestClient(create_app(load=load)) as client:
+        assert loads == ["models"]  # before any request
         client.post("/predict", json={"transcript": "Hi."})
         client.post("/predict", json={"audio": audio(), "silence_ms": 0})
-    assert loads == ["text", "audio"]
+        client.post("/predict", json={"audio": audio(), "transcript": "Hi.", "silence_ms": 0})
+    assert loads == ["models"]
+
+
+def test_every_served_model_must_be_loaded(stub, audio_stub, combined_stub):
+    with pytest.raises(ValueError, match="combined"):
+        with TestClient(create_app(load=lambda: models(stub, audio_stub, combined_stub)[:2])):
+            pass
