@@ -4,4 +4,4 @@ Development conversations, cross-validated: each speaker group is scored at the 
 
 | Model | Knob | Setting chosen on all development (per-fold range) | Recall | False-cut-in rate | Detection latency p10 / p50 / p90 (ms) |
 |---|---|---:|---:|---:|---:|
-| silence timeout | N (ms) | 1150 (1100–1250) | 0.853 | 0.098 | 1100 / 1150 / 1200 |
+| baseline | silence timeout N (ms) | 1150 (1100–1250) | 0.853 | 0.098 | 1100 / 1150 / 1200 |

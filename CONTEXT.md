@@ -36,7 +36,7 @@ The detector's single decision that the user's turn has ended and the agent shou
 _Avoid_: trigger, detection
 
 **Model**:
-One complete way of deciding when to fire: a plain rule (the silence timeout) or a trained classifier plus a firing rule. The four models (silence timeout, text-only, audio-only, combined) are compared on the same evaluation.
+One complete way of deciding when to fire: a plain rule (the baseline, a silence timeout) or a trained classifier plus a firing rule. The four models (baseline, text-only, audio-only, combined) are compared on the same evaluation.
 _Avoid_: system, detector (for one of the four)
 
 **Classifier**:

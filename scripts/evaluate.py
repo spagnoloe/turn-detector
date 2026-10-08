@@ -1,7 +1,7 @@
 """Sweep a model over its knob on the development conversations, cross-validate the knob, write the
 model's results to results/models/<model>/, and rebuild the comparison in results/comparison/.
 
-    uv run python scripts/evaluate.py silence-timeout
+    uv run python scripts/evaluate.py baseline
 
 The held-out conversations are not touched.
 """

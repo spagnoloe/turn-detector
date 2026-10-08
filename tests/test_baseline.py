@@ -1,7 +1,7 @@
-"""The silence-timeout model, through the model interface."""
+"""The baseline (a silence timeout), through the model interface."""
 
 from turn_detector.model import Segment, SpeakerSide
-from turn_detector.models.silence_timeout import SilenceTimeout
+from turn_detector.models.baseline import Baseline
 
 
 def side(*segments: tuple[float, float], duration_s: float = 20.0) -> SpeakerSide:
@@ -17,18 +17,18 @@ def side(*segments: tuple[float, float], duration_s: float = 20.0) -> SpeakerSid
 
 
 def test_fires_at_segment_end_plus_timeout():
-    assert SilenceTimeout(timeout_ms=500).fire(side((1.0, 3.0))) == [3.5]
+    assert Baseline(timeout_ms=500).fire(side((1.0, 3.0))) == [3.5]
 
 
 def test_does_not_fire_when_the_user_resumes_first():
     # The 0.4 s pause after 3.0 is shorter than the timeout; the 2 s pause after 5.0 is not.
-    assert SilenceTimeout(timeout_ms=500).fire(side((1.0, 3.0), (3.4, 5.0), (7.0, 8.0))) == [5.5, 8.5]
+    assert Baseline(timeout_ms=500).fire(side((1.0, 3.0), (3.4, 5.0), (7.0, 8.0))) == [5.5, 8.5]
 
 
 def test_does_not_fire_after_the_conversation_ends():
-    assert SilenceTimeout(timeout_ms=500).fire(side((1.0, 3.0), (18.0, 19.8), duration_s=20.0)) == [3.5]
+    assert Baseline(timeout_ms=500).fire(side((1.0, 3.0), (18.0, 19.8), duration_s=20.0)) == [3.5]
 
 
 def test_segments_ending_together_fire_once():
     # Overlapping consensus segments can share an end time; firings must be strictly increasing.
-    assert SilenceTimeout(timeout_ms=500).fire(side((1.0, 3.0), (2.0, 3.0))) == [3.5]
+    assert Baseline(timeout_ms=500).fire(side((1.0, 3.0), (2.0, 3.0))) == [3.5]

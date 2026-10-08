@@ -1,4 +1,4 @@
-"""The silence-timeout model, the baseline: what plain voice-activity detection achieves."""
+"""The baseline: a silence timeout, which is what plain voice-activity detection achieves."""
 
 from dataclasses import dataclass
 
@@ -6,11 +6,11 @@ from turn_detector.model import SpeakerSide
 
 
 @dataclass(frozen=True)
-class SilenceTimeout:
+class Baseline:
     """Fire `timeout_ms` after each segment end if the user hasn't resumed speaking by then."""
 
     timeout_ms: float
-    name: str = "silence timeout"
+    name: str = "baseline"
 
     def fire(self, side: SpeakerSide) -> list[float]:
         firings = set()

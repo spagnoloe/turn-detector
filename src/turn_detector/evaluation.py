@@ -6,7 +6,7 @@ against its gold EOTs and mid-turn pauses, exactly as `turnbench.score` does: a 
 firing in [EOT - 0.25 s, EOT + 3 s], any firing in a mid-turn pause is one false cut-in, and
 firings in disputed regions are ignored. Only the EOT task is scored.
 
-A model has one knob (the silence timeout's N, a classifier's threshold). Each conversation is scored
+A model has one knob (the baseline's timeout N, a classifier's threshold). Each conversation is scored
 once per knob value; a sweep, a cross-validation fold or a held-out evaluation is then just a
 sum over a subset of conversations.
 """

@@ -13,9 +13,9 @@ import numpy as np
 import pytest
 
 from turn_detector.model import Audio, Model, Segment, SpeakerSide
-from turn_detector.models.silence_timeout import SilenceTimeout
+from turn_detector.models.baseline import Baseline
 
-MODELS_UNDER_TEST: list[Model] = [SilenceTimeout(timeout_ms=200), SilenceTimeout(timeout_ms=1000)]
+MODELS_UNDER_TEST: list[Model] = [Baseline(timeout_ms=200), Baseline(timeout_ms=1000)]
 
 DURATION_S = 30.0
 SAMPLE_RATE = 16_000

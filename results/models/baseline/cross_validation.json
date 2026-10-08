@@ -1,6 +1,6 @@
 {
-  "model": "silence timeout",
-  "knob_name": "N (ms)",
+  "model": "baseline",
+  "knob_name": "silence timeout N (ms)",
   "folds": [
     {
       "held_out": [

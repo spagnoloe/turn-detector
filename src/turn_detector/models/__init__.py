@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from turn_detector.model import Model
-from turn_detector.models.silence_timeout import SilenceTimeout
+from turn_detector.models.baseline import Baseline
 
 
 @dataclass(frozen=True)
@@ -33,10 +33,10 @@ MODELS = {
     model.slug: model
     for model in [
         RegisteredModel(
-            name="silence timeout",
-            knob_name="N (ms)",
+            name="baseline",
+            knob_name="silence timeout N (ms)",
             knob_values=[float(n) for n in range(0, 3001, 50)],
-            build=lambda n: SilenceTimeout(timeout_ms=n),
+            build=lambda n: Baseline(timeout_ms=n),
             colour="#2a78d6",
         ),
     ]

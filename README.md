@@ -43,7 +43,7 @@ This prints counts per split and per speaker. The dev-set totals (1904 EOTs, 106
 
 ## Models
 
-A **model** is one complete way of deciding when the user's turn has ended: a plain rule (the silence timeout) or a trained classifier plus a firing rule. Four are planned: silence timeout (the baseline), text-only, audio-only and combined.
+A **model** is one complete way of deciding when the user's turn has ended: a plain rule (the baseline) or a trained classifier plus a firing rule. Four are planned: the baseline, text-only, audio-only and combined.
 
 Code is split into what every model shares and what belongs to one model:
 
@@ -53,7 +53,7 @@ Code is split into what every model shares and what belongs to one model:
 | `turn_detector.timeline` | Shared: builds each speaker's side from the annotations. |
 | `turn_detector.evaluation`, `turn_detector.report` | Shared: scoring, knob sweep, cross-validation, results table and figures. |
 | `turn_detector.models` | One module per model, plus `MODELS`, the registry of each model's knob, swept values and figure colour. |
-| `turn_detector.models.silence_timeout` | The silence timeout: fires at segment end + N ms if the user hasn't resumed by then. |
+| `turn_detector.models.baseline` | The baseline, a silence timeout: fires at segment end + N ms if the user hasn't resumed by then. This is what plain voice-activity detection achieves. |
 
 The segments are TurnBench's 2-of-3 consensus segments, so their ends are the pauses every model sees: a perfect pause detector in place of a real VAD. Speech without annotator agreement is missing from the timeline, and each segment's transcript comes from the closest-matching annotator segment (the annotators' texts agree 99% of the time).
 
@@ -62,10 +62,10 @@ The segments are TurnBench's 2-of-3 consensus segments, so their ends are the pa
 ## Evaluation
 
 ```bash
-uv run python scripts/evaluate.py silence-timeout
+uv run python scripts/evaluate.py baseline
 ```
 
-This sweeps the model's knob (for the silence timeout, N from 0 to 3000 ms) on the development conversations and writes:
+This sweeps the model's knob (for the baseline, the silence timeout N from 0 to 3000 ms) on the development conversations and writes:
 
 - `results/models/<model>/`, that model only:
   - `sweep.csv`: recall, **false-cut-in rate** and p10/p50/p90 **detection latency** at every knob setting, on all development conversations;
