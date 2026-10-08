@@ -7,9 +7,9 @@ Domain terms (EOT, mid-turn pause, firing, false cut-in, detection latency, requ
 The detector decides, during each pause in the user's speech, whether the user has finished their turn. Four models are compared on the TurnBench dev set (38 two-channel conversations, about 7 h), split by speaker into 26 development and 12 held-out conversations ([ADR 0003](adr/0003-train-on-turnbench-dev.md)):
 
 - **baseline**: a silence timeout, which is what plain VAD achieves;
-- **text-only**: a frozen MiniLM sentence encoder and a logistic-regression head over the transcript so far;
+- **text-only**: a frozen MiniLM sentence encoder and a logistic-regression head. It reads the agent's previous turn and the user's current turn so far (at most the last 64 tokens of the two), not the whole conversation, once per pause, 200 ms after the user stops speaking;
 - **audio-only**: a frozen wav2vec2-base encoder and a logistic-regression head over the last 1 s of audio, every 50 ms;
-- **combined**: late fusion of the two probabilities and the silence duration.
+- **combined**: late fusion of the two probabilities and the silence duration, every 50 ms. Its P_text reads the same two turns as the text-only model, as of the latest pause whose text has arrived.
 
 Each trained model fires when its P(EOT) reaches a threshold, or else at a silence backstop. The two knobs are chosen by cross-validation with one speaker group held out per fold, using TurnBench's rule: the highest recall at a false-cut-in rate of 0.10 or less. Everything is scored with TurnBench's own EOT scorer. The models are served by a stateless FastAPI service in a CPU Docker image and stress-tested with Locust. How to run all of it is in the [README](../README.md).
 
