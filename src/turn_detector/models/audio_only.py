@@ -33,7 +33,7 @@ from scipy.signal import resample_poly
 
 from turn_detector.data import ARTIFACTS_DIR, DATA_DIR, load_audio
 from turn_detector.evaluation import EvaluationConversation
-from turn_detector.model import EPSILON_S, STEP_S, Audio, Setting, SpeakerSide, next_speech_start, steps
+from turn_detector.model import EPSILON_S, HORIZON_S, STEP_S, Audio, Setting, SpeakerSide, next_speech_start, steps
 from turn_detector.models.text_only import LogisticHead
 from turn_detector.split import speaker_groups
 
@@ -50,14 +50,12 @@ REGULARISATION_C = 1e-4
 SAMPLE_RATE = 16_000
 WINDOW_S = 1.0
 WINDOW_SAMPLES = round(WINDOW_S * SAMPLE_RATE)
-# The model stops listening this far into a pause: TurnBench never counts a firing more than 3 s
-# after an EOT as a hit.
-HORIZON_S = 3.0
 TRAINED_PAUSE_S = 1.0  # training samples go this far into a pause
 SPEECH_SAMPLE_EVERY_S = 1.0
 # wav2vec2's frames: one every 320 samples (20 ms), each heard through 400 samples (25 ms).
 FRAME_STRIDE, FRAME_SIZE = 320, 400
 LAST_SPEECH_FRAMES = 10  # 200 ms: how the speech ended
+WINDOWS_PER_BATCH = 256  # windows cut and encoded at once, to bound memory
 ARTIFACT_PATH = ARTIFACTS_DIR / NAME / "audio-only.json"
 FEATURE_CACHE_DIR = DATA_DIR / "cache" / NAME
 
@@ -191,17 +189,17 @@ def scored(pauses: Sequence[tuple[float, list[float]]], p_eot: Sequence[float]) 
     return result
 
 
-def scored_pauses(side: SpeakerSide, classifier: Classifier, chunk: int = 256) -> list[ScoredPause]:
-    """Every pause of the user's, each step scored by `classifier`, `chunk` windows at a time."""
+def scored_pauses(side: SpeakerSide, classifier: Classifier) -> list[ScoredPause]:
+    """Every pause of the user's, each step scored by `classifier`."""
     if side.audio is None:
         raise ValueError("the audio-only model needs the user's audio")
     pauses = pause_steps(side)
     times = [t for _, ts in pauses for t in ts]
     silence_s = np.array([t - end for end, ts in pauses for t in ts])
     p_eot = []
-    for start in range(0, len(times), chunk):
-        batch = windows(side.audio, times[start : start + chunk])
-        p_eot.extend(classifier.p_eot(batch, silence_s[start : start + chunk]))
+    for start in range(0, len(times), WINDOWS_PER_BATCH):
+        batch = windows(side.audio, times[start : start + WINDOWS_PER_BATCH])
+        p_eot.extend(classifier.p_eot(batch, silence_s[start : start + WINDOWS_PER_BATCH]))
     return scored(pauses, p_eot)
 
 
@@ -303,9 +301,9 @@ def side_features(side: SpeakerSide, encoder: Encoder, cache_dir: Path = FEATURE
     audio = side.audio if side.audio is not None else load_audio(side.conversation_id, side.speaker)
     silence_s = np.where(np.isnan(pause_ends), 0.0, times - pause_ends)
     rows = []
-    for start in range(0, len(times), 256):
-        batch = windows(audio, list(times[start : start + 256]))
-        rows.append(features(encoder(batch), silence_s[start : start + 256]))
+    for start in range(0, len(times), WINDOWS_PER_BATCH):
+        batch = windows(audio, list(times[start : start + WINDOWS_PER_BATCH]))
+        rows.append(features(encoder(batch), silence_s[start : start + WINDOWS_PER_BATCH]))
     result = np.concatenate(rows) if rows else np.zeros((0, 0), np.float32)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(path, times=times, features=result.astype(np.float16))

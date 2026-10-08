@@ -27,9 +27,8 @@ from typing import Any, Literal
 import numpy as np
 from scipy.signal import resample_poly
 
-from turn_detector.model import EPSILON_S, Audio, SpeakerSide, next_speech_start, steps
+from turn_detector.model import EPSILON_S, HORIZON_S, Audio, SpeakerSide, next_speech_start, steps
 from turn_detector.models import text_only
-from turn_detector.models.audio_only import HORIZON_S
 from turn_detector.models.text_only import ASR_LAG_S, text_context
 from turn_detector.serving import AUDIO_SAMPLE_RATE, AUDIO_SAMPLES
 

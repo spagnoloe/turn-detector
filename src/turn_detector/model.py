@@ -93,6 +93,9 @@ def next_speech_start(side: SpeakerSide, end: float) -> float:
 # A live detector is asked every 50 ms, on a grid counted from the start of the call.
 STEP_S = 0.05
 EPSILON_S = 1e-6  # steps are on a float grid; compare times with this much slack
+# A model stops listening this far into a pause: TurnBench never counts a firing more than 3 s
+# after an EOT as a hit.
+HORIZON_S = 3.0
 
 
 def steps(start: float, until: float) -> Iterator[float]:

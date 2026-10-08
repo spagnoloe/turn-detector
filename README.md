@@ -73,7 +73,7 @@ uv run python scripts/evaluate.py text-only
 uv run python scripts/evaluate.py audio-only
 ```
 
-This fits the model to the development conversations, sweeps its settings, one value per knob (for the baseline, the silence timeout N from 0 to 3000 ms in steps of 50; for the text-only model, every pair of a P_text threshold from 0 to 1 in steps of 0.01 and a backstop from 200 to 3000 ms in steps of 50; for the audio-only model, the P_audio threshold from 0 to 1 in steps of 0.01), and writes:
+This fits the model to the development conversations, sweeps its settings, one value per knob (for the baseline, the silence timeout N from 0 to 3000 ms in steps of 50; for the text-only model, every pair of a P_text threshold from 0 to 1 in steps of 0.01 and a backstop from 200 to 3000 ms in steps of 50; for the audio-only model, the P_audio threshold from 0 to 1 in steps of 0.001, since its probabilities bunch up near the chosen threshold), and writes:
 
 - `results/models/<model>/`, that model only:
   - `sweep.csv`: recall, **false-cut-in rate** and p10/p50/p90 **detection latency** at every setting, on all development conversations;
