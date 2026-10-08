@@ -42,7 +42,7 @@ from turn_detector.models.classified import (
     ScoredPause,
     Serving,
     SideKey,
-    check_saved_setting,
+    at_setting,
     cross_fitted,
     firings,
     gold_pause_labels,
@@ -160,9 +160,8 @@ def final(setting: Setting) -> Combined:
     audio encoder on the GPU if there is one."""
     import torch
 
-    model = load_combined(audio_encoder=Wav2Vec2Encoder(device="mps" if torch.backends.mps.is_available() else "cpu"))
-    check_saved_setting(NAME, model.threshold, model.backstop_s, setting)
-    return model
+    encoder = Wav2Vec2Encoder(device="mps" if torch.backends.mps.is_available() else "cpu")
+    return at_setting(load_combined(audio_encoder=encoder), setting)
 
 
 @dataclass

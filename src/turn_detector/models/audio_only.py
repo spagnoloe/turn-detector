@@ -44,8 +44,8 @@ from turn_detector.models.classified import (
     ScoredPause,
     Serving,
     SideKey,
+    at_setting,
     check_encoder,
-    check_saved_setting,
     firings,
     gold_pause_labels,
     head_from_json,
@@ -256,9 +256,8 @@ def final(setting: Setting) -> AudioOnly:
     encoder on the GPU if there is one."""
     import torch
 
-    model = load_audio_only(encoder=Wav2Vec2Encoder(device="mps" if torch.backends.mps.is_available() else "cpu"))
-    check_saved_setting(NAME, model.threshold, model.backstop_s, setting)
-    return model
+    encoder = Wav2Vec2Encoder(device="mps" if torch.backends.mps.is_available() else "cpu")
+    return at_setting(load_audio_only(encoder=encoder), setting)
 
 
 # Cached features. A side's features are kept for every 50 ms step the evaluation scores and every

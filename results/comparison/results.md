@@ -2,7 +2,7 @@
 
 ## Held-out conversations: the final scores
 
-The 12 held-out conversations, scored once, in a single run, by each final model (trained on all 26 development conversations) at the setting chosen in cross-validation, with no tuning afterwards. Scored with TurnBench's EOT scorer. These are the only clean scores: the audio model's encoder layer (8) and regularisation (C = 1e-4) were picked on a third of the development conversations, so the cross-validated development scores below are slightly optimistic for the audio-only and combined models.
+The held-out conversations, scored once, in a single run, by each final model (trained on all development conversations) at the setting chosen in cross-validation, with no tuning afterwards. Scored with TurnBench's EOT scorer. The settings keep the false-cut-in rate within the budget on development conversations; on held-out ones it can exceed it, and nothing is re-tuned when it does. These are the only clean scores: the audio model's encoder layer (8) and regularisation (C = 1e-4) were picked on a third of the development conversations, so the cross-validated development scores below are slightly optimistic for the audio-only and combined models.
 
 The held-out set is small: 512 EOTs and 352 mid-turn pauses, so one EOT moves recall by 0.002 and one mid-turn pause the false-cut-in rate by 0.003. A 95% binomial interval is about ±0.03 on recall and ±0.04 on the false-cut-in rate, and wider in truth, since the pauses of one conversation are correlated.
 
@@ -26,7 +26,7 @@ The full list of assumptions is in [`docs/solution.md`](../../docs/solution.md#a
 
 ## Development conversations, cross-validated
 
-Development conversations, cross-validated: each speaker group is scored at the setting chosen without it (highest recall within the false-cut-in budget), and the folds are pooled, so the scores mix the per-fold settings. Scored with TurnBench's EOT scorer. The setting chosen on all development conversations is the one a final model would use.
+Development conversations, cross-validated: each speaker group is scored at the setting chosen without it (highest recall within the false-cut-in budget), and the folds are pooled, so the scores mix the per-fold settings, and the pooled false-cut-in rate can exceed the budget each setting met on the other folds. Scored with TurnBench's EOT scorer. The setting chosen on all development conversations is the one a final model would use.
 
 | Model | Knobs | Setting chosen on all development (per-fold range) | Recall | False-cut-in rate | Detection latency p10 / p50 / p90 (ms) |
 |---|---|---:|---:|---:|---:|

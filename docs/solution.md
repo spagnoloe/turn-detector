@@ -44,6 +44,8 @@ Even with that advantage, VAP reaches a similar recall at well under half the fa
 
 ### What the held-out results show
 
+Counts of confident and backstop firings below come from a one-off diagnostic run after the held-out evaluation, which re-applied each saved model's firing rule to the held-out conversations without changing anything. They are not in a recorded results file.
+
 - **The false-cut-in budget did not transfer.** The same 1150 ms timeout cuts in on 9.8% of the development conversations' mid-turn pauses and on 14.2% of the held-out ones. The held-out speakers simply pause longer mid-turn. A threshold tuned on 26 conversations fixes the firing rule, not the false-cut-in rate, which depends on how the speakers pause. In production that calls for per-deployment calibration and monitoring of the false-cut-in proxy (see [Monitoring in production](#monitoring-in-production)).
 - **Text-only is the baseline in practice.** Of its 545 held-out firings, 5 were confident (P_text ≥ 0.9, 200 ms into the pause) and 540 came from the backstop. Those 5 firings gained 2 EOTs, which is not a measurable difference. This matches the development finding that its head ranks EOTs above mid-turn pauses barely better than chance (see [Why the text model barely beats the baseline](#what-are-the-limits-of-the-current-solution)).
 - **Combined is the baseline exactly.** Its final fusion head never reached the 0.926 threshold on the held-out conversations: all 543 firings came from its 1150 ms backstop, the baseline's timeout. The threshold was chosen on the cross-fitted fusion heads' probabilities, which did reach it on development (p10 detection latency 569 ms). The final head, trained on all development conversations, is a different head, and its probabilities stay below the threshold: on the held-out conversations, and also on a development conversation checked by hand (maximum 0.91). The per-fold thresholds already ranged from 0.894 to 0.926, so the head's probabilities sit close to the threshold, and a small shift turns every early firing off. Thresholding this head so close to its ceiling is fragile. In production it would show up as a rising backstop share.
@@ -52,7 +54,7 @@ Even with that advantage, VAP reaches a similar recall at well under half the fa
 
 ### Development conversations, cross-validated
 
-Leave-one-speaker-group-out cross-validation over the 26 development conversations (9 folds). Each fold is scored at the setting chosen without it, and the folds are pooled. These numbers chose the settings above, and are slightly optimistic for the audio-only and combined models (see above).
+Leave-one-speaker-group-out cross-validation over the 26 development conversations (9 folds). Each fold is scored at the setting chosen without it, and the folds are pooled. Each setting met the 0.10 budget on the folds it was chosen on, but the pooled false-cut-in rate of the trained models ends up above it (0.113–0.122): the budget does not fully carry over even between development speaker groups. These numbers chose the settings above, and are slightly optimistic for the audio-only and combined models (see above).
 
 | Model | Setting chosen (per-fold range) | Recall | False-cut-in rate | Detection latency p10 / p50 / p90 (ms) |
 |---|---|---:|---:|---:|

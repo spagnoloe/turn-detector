@@ -15,15 +15,17 @@ tuning afterwards: the script refuses to run if any model already has held-out s
 import argparse
 
 from turn_detector.evaluation import load_conversations, score_held_out
-from turn_detector.report import HELD_OUT_NAME, load_all, model_dir, save_held_out, write_comparison
+from turn_detector.report import load_all, save_held_out, write_comparison
 from turn_detector.split import load_split
 
 
 def main() -> None:
     argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
     results = load_all()
-    if scored := [result.model.name for result in results if (model_dir(result.model) / HELD_OUT_NAME).exists()]:
-        raise SystemExit(f"the held-out conversations have already been scored ({', '.join(scored)}); they are scored once")
+    if scored := [result.model.name for result in results if result.held_out is not None]:
+        raise SystemExit(
+            f"the held-out conversations have already been scored ({', '.join(scored)}); they are scored once"
+        )
 
     # Load every final model before scoring any, so a stale artifact stops the run before it starts.
     finals = [(result, result.model.final(result.cross_validation.setting)) for result in results]

@@ -1,6 +1,8 @@
 """The held-out evaluation: each final model scored once on the held-out conversations, at the
 setting chosen in cross-validation, and reported next to the published references."""
 
+from dataclasses import dataclass
+
 import numpy as np
 import pytest
 
@@ -9,7 +11,7 @@ from turn_detector.evaluation import CrossValidation, Fold, Scores, evaluation_c
 from turn_detector.model import Audio, SpeakerSide
 from turn_detector.models import MODELS, RegisteredModel, Rule
 from turn_detector.models.baseline import Baseline
-from turn_detector.models.classified import check_saved_setting
+from turn_detector.models.classified import at_setting
 from turn_detector.report import PUBLISHED_REFERENCES, ModelResults, load, save, save_held_out, write_table
 
 TURN = "Normal Turn"
@@ -58,10 +60,20 @@ def test_the_final_baseline_is_the_timeout_chosen():
     assert MODELS["baseline"].final((1150.0,)) == Baseline(timeout_ms=1150.0)
 
 
+@dataclass(frozen=True)
+class Saved:
+    threshold: float
+    backstop_s: float
+    name: str = "text-only"
+
+
 def test_a_saved_model_must_be_at_the_setting_chosen():
-    check_saved_setting("text-only", 0.9, 1.15, (0.9, 1150.0))
+    saved = Saved(threshold=0.9, backstop_s=1.15)
+    assert at_setting(saved, (0.9, 1150.0)) is saved
     with pytest.raises(ValueError, match="text-only"):
-        check_saved_setting("text-only", 0.9, 1.15, (0.86, 1150.0))
+        at_setting(saved, (0.86, 1150.0))
+    with pytest.raises(ValueError, match="text-only"):
+        at_setting(saved, (0.9, 1200.0))
 
 
 def scores(setting: tuple[float, ...], recall: float, false_cut_in_rate: float) -> Scores:
@@ -92,6 +104,14 @@ def test_held_out_scores_load_back_with_the_model(tmp_path):
     assert load(found.model, tmp_path).cross_validation == found.cross_validation
 
 
+def test_held_out_scores_at_another_setting_than_the_one_chosen_are_refused(tmp_path):
+    # The held-out scores of an earlier evaluation, whose cross-validation chose another setting.
+    found = results(tmp_path)
+    save_held_out(found.model, scores((1100.0,), 0.75, 0.08), ["31"], tmp_path)
+    with pytest.raises(ValueError, match="held_out.json"):
+        load(found.model, tmp_path)
+
+
 def test_held_out_scores_are_written_once(tmp_path):
     found = results(tmp_path)
     save_held_out(found.model, scores((1000.0,), 0.75, 0.08), ["31"], tmp_path)
@@ -106,11 +126,12 @@ def test_the_table_leads_with_held_out_scores_and_the_published_references(tmp_p
     write_table([load(found.model, tmp_path)], path)
     table = path.read_text()
 
-    held_out, development = table.index("| timeout | N (ms) | 1000 | 0.750"), table.index("| timeout | N (ms) | 1000 (1000–1000) | 0.800")
+    held_out = table.index("| timeout | N (ms) | 1000 | 0.750")
+    development = table.index("| timeout | N (ms) | 1000 (1000–1000) | 0.800")
     assert held_out < development
     for reference in PUBLISHED_REFERENCES:
-        assert f"| {reference.name} " in table
-        assert table.index(f"| {reference.name} ") < development
+        assert f"| {reference.name} (published) " in table
+        assert table.index(f"| {reference.name} (published) ") < development
 
 
 def test_without_held_out_scores_the_table_is_the_cross_validated_one(tmp_path):

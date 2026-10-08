@@ -138,15 +138,30 @@ def check_encoder[E: Named](stored: dict, encoder: E) -> E:
     return encoder
 
 
-def check_saved_setting(name: str, threshold: float, backstop_s: float, setting: Setting) -> None:
-    """Refuse a saved model that isn't at `setting` (threshold, backstop in ms): its artifact is
-    stale, from an evaluation older than the results that chose `setting`."""
-    chosen_threshold, chosen_backstop_ms = setting
-    if not (math.isclose(threshold, chosen_threshold) and math.isclose(backstop_s * 1000, chosen_backstop_ms)):
+class Thresholded(Protocol):
+    """A model that fires on a threshold or a backstop."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def threshold(self) -> float: ...
+
+    @property
+    def backstop_s(self) -> float: ...
+
+
+def at_setting[M: Thresholded](model: M, setting: Setting) -> M:
+    """`model`, a saved one, if it is at `setting` (threshold, backstop in ms); otherwise its
+    artifact is stale, from an evaluation older than the results that chose `setting`."""
+    threshold, backstop_ms = setting
+    if not (math.isclose(model.threshold, threshold) and math.isclose(model.backstop_s * 1000, backstop_ms)):
         raise ValueError(
-            f"the saved {name} model is at threshold {threshold:g}, backstop {backstop_s * 1000:g} ms, not at the "
-            f"setting chosen in cross-validation, {setting}; re-run scripts/evaluate.py {name}"
+            f"the saved {model.name} model is at threshold {model.threshold:g}, backstop "
+            f"{model.backstop_s * 1000:g} ms, not at the setting chosen in cross-validation, {setting}; "
+            f"re-run scripts/evaluate.py {model.name}"
         )
+    return model
 
 
 def save_json(stored: dict, path: Path) -> Path:

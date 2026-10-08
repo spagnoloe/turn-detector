@@ -39,8 +39,8 @@ from turn_detector.models.classified import (
     PredictionInputs,
     ScoredPause,
     Serving,
+    at_setting,
     check_encoder,
-    check_saved_setting,
     firings,
     gold_pause_labels,
     head_from_json,
@@ -264,9 +264,7 @@ def load_text_only(path: Path = ARTIFACT_PATH, encoder: Encoder | None = None) -
 
 def final(setting: Setting) -> TextOnly:
     """The saved final model, which must be at `setting`, the one cross-validation chose."""
-    model = load_text_only()
-    check_saved_setting(NAME, model.threshold, model.backstop_s, setting)
-    return model
+    return at_setting(load_text_only(), setting)
 
 
 def labelled_pauses(conversation: EvaluationConversation) -> list[tuple[TextContext, bool]]:

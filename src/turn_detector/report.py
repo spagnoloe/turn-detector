@@ -47,21 +47,23 @@ class Reference:
     trained_on: str
     recall: float
     false_cut_in_rate: float
-    detection_latency_ms: tuple[float, float, float]  # p10, p50, p90
+    detection_latency_p10_ms: float
+    detection_latency_p50_ms: float
+    detection_latency_p90_ms: float
 
 
 # EOT scores on the TurnBench test set, from TurnBench's results/leaderboard-test.json at the commit
 # pyproject.toml pins (38a6f87), each at its operating point chosen on the whole dev set.
 PUBLISHED_REFERENCES = [
     Reference(
-        "VAP (published)",
+        "VAP",
         "Switchboard and Fisher, then fine-tuned on TurnBench's 104 h training set",
-        0.845, 0.055, (-57.0, 368.0, 1537.0),
+        0.845, 0.055, -57.0, 368.0, 1537.0,
     ),
     Reference(
-        "Pipecat Smart Turn v3 (published)",
+        "Pipecat Smart Turn v3",
         "Pipecat's own turn-completion data (not TurnBench)",
-        0.752, 0.047, (729.0, 1017.0, 1175.0),
+        0.752, 0.047, 729.0, 1017.0, 1175.0,
     ),
 ]  # fmt: skip
 REFERENCE_INK = "#9a988f"
@@ -135,7 +137,12 @@ def save_held_out(
     path = model_dir(model, results_dir) / HELD_OUT_NAME
     if path.exists():
         raise FileExistsError(f"{path} exists: the held-out conversations have already been scored")
-    stored = {"model": model.name, "knob_names": model.knob_names, "conversations": conversation_ids, "scores": asdict(scores)}
+    stored = {
+        "model": model.name,
+        "knob_names": model.knob_names,
+        "conversations": conversation_ids,
+        "scores": asdict(scores),
+    }
     path.write_text(json.dumps(stored, indent=2) + "\n")
     return path
 
@@ -152,6 +159,11 @@ def load(model: RegisteredModel, results_dir: Path = RESULTS_DIR) -> ModelResult
     )
     held_out_path = directory / HELD_OUT_NAME
     held_out = scores_from(json.loads(held_out_path.read_text())["scores"]) if held_out_path.exists() else None
+    if held_out is not None and held_out.setting != cross_validation.setting:
+        raise ValueError(
+            f"{held_out_path} scores setting {held_out.setting}, but cross-validation now chooses "
+            f"{cross_validation.setting}: delete it and score the held-out conversations again"
+        )
     return ModelResults(model, sweep, cross_validation, held_out)
 
 
@@ -164,8 +176,16 @@ def number(value: float, digits: int) -> str:
     return "—" if math.isnan(value) else f"{value:.{digits}f}"
 
 
-def latencies(p10: float, p50: float, p90: float) -> str:
-    return " / ".join(number(ms, 0) for ms in (p10, p50, p90))
+def latencies(scores: Scores | Reference) -> str:
+    """Detection latency p10 / p50 / p90, in ms."""
+    return " / ".join(
+        number(ms, 0)
+        for ms in (scores.detection_latency_p10_ms, scores.detection_latency_p50_ms, scores.detection_latency_p90_ms)
+    )
+
+
+def has_held_out(results: list[ModelResults]) -> bool:
+    return any(result.held_out is not None for result in results)
 
 
 def uncertainty_lines(scores: Scores) -> list[str]:
@@ -189,9 +209,11 @@ def held_out_lines(results: list[ModelResults]) -> list[str]:
     lines = [
         "## Held-out conversations: the final scores",
         "",
-        "The 12 held-out conversations, scored once, in a single run, by each final model (trained on "
-        "all 26 development conversations) at the setting chosen in cross-validation, with no tuning "
-        "afterwards. Scored with TurnBench's EOT scorer. These are the only clean scores: the audio "
+        "The held-out conversations, scored once, in a single run, by each final model (trained on "
+        "all development conversations) at the setting chosen in cross-validation, with no tuning "
+        "afterwards. Scored with TurnBench's EOT scorer. The settings keep the false-cut-in rate within "
+        "the budget on development conversations; on held-out ones it can exceed it, and nothing is "
+        "re-tuned when it does. These are the only clean scores: the audio "
         "model's encoder layer (8) and regularisation (C = 1e-4) were picked on a third of the "
         "development conversations, so the cross-validated development scores below are slightly "
         "optimistic for the audio-only and combined models.",
@@ -208,12 +230,12 @@ def held_out_lines(results: list[ModelResults]) -> list[str]:
             f"| {result.model.name} | {', '.join(result.model.knob_names)} "
             f"| {', '.join(f'{value:g}' for value in scores.setting)} | {number(scores.recall, 3)} "
             f"| {number(scores.false_cut_in_rate, 3)} "
-            f"| {latencies(scores.detection_latency_p10_ms, scores.detection_latency_p50_ms, scores.detection_latency_p90_ms)} |"
+            f"| {latencies(scores)} |"
         )
     for reference in PUBLISHED_REFERENCES:
         lines.append(
-            f"| {reference.name} | — | — | {reference.recall:.3f} | {reference.false_cut_in_rate:.3f} "
-            f"| {latencies(*reference.detection_latency_ms)} |"
+            f"| {reference.name} (published) | — | — | {reference.recall:.3f} | {reference.false_cut_in_rate:.3f} "
+            f"| {latencies(reference)} |"
         )
     lines += [
         "",
@@ -221,7 +243,7 @@ def held_out_lines(results: list[ModelResults]) -> list[str]:
         "",
         "- they are scored on TurnBench's test set, a different and larger split than our held-out "
         "conversations, at an operating point chosen on the whole dev set;",
-        *(f"- {reference.name.removesuffix(' (published)')} was trained on {reference.trained_on};" for reference in PUBLISHED_REFERENCES),
+        *(f"- {ref.name} was trained on {ref.trained_on};" for ref in PUBLISHED_REFERENCES),
         "- they detect pauses from the audio themselves, whereas every model here is given the "
         "annotators' consensus segment ends (a perfect VAD) and, for text, human transcripts (a "
         "perfect ASR, read 200 ms after each segment ends).",
@@ -236,12 +258,13 @@ def write_table(results: list[ModelResults], path: Path) -> None:
     """Recall and median detection latency at the operating point: on the held-out conversations
     once they are scored, then cross-validated on the development conversations."""
     lines = [f"# Results at a false-cut-in rate of {MAX_FALSE_CUT_IN_RATE:.2f} or less", ""]
-    if any(result.held_out is not None for result in results):
+    if has_held_out(results):
         lines += [*held_out_lines(results), "## Development conversations, cross-validated", ""]
     lines += [
         "Development conversations, cross-validated: each speaker group is scored at the setting "
         "chosen without it (highest recall within the false-cut-in budget), and the folds are pooled, "
-        "so the scores mix the per-fold settings. Scored with TurnBench's EOT scorer. The setting "
+        "so the scores mix the per-fold settings, and the pooled false-cut-in rate can exceed the "
+        "budget each setting met on the other folds. Scored with TurnBench's EOT scorer. The setting "
         "chosen on all development conversations is the one a final model would use.",
         "",
         "| Model | Knobs | Setting chosen on all development (per-fold range) | Recall | False-cut-in rate "
@@ -258,7 +281,7 @@ def write_table(results: list[ModelResults], path: Path) -> None:
         lines.append(
             f"| {result.model.name} | {', '.join(result.model.knob_names)} | {chosen} ({fold_ranges}) "
             f"| {number(scores.recall, 3)} | {number(scores.false_cut_in_rate, 3)} "
-            f"| {latencies(scores.detection_latency_p10_ms, scores.detection_latency_p50_ms, scores.detection_latency_p90_ms)} |"
+            f"| {latencies(scores)} |"
         )
     path.write_text("\n".join(lines) + "\n")
 
@@ -288,15 +311,18 @@ def mark_held_out(axes, results: list[ModelResults], metric: str) -> None:
             marker="s", markersize=7 + 3 * (len(held_out) - 1 - index), markerfacecolor="none",
             markeredgecolor=result.model.colour, markeredgewidth=1.5, linestyle="none", zorder=5,
         )  # fmt: skip
-    axes.plot([], [], marker="s", markersize=8, markerfacecolor="none", markeredgecolor=MUTED_INK, markeredgewidth=1.5, linestyle="none", label="held-out, final model")
+    axes.plot(
+        [], [], marker="s", markersize=8, markerfacecolor="none", markeredgecolor=MUTED_INK, markeredgewidth=1.5,
+        linestyle="none", label="held-out, final model",
+    )  # fmt: skip
     for index, reference in enumerate(PUBLISHED_REFERENCES):
-        value = reference.recall if metric == "recall" else reference.detection_latency_ms[1]
+        value = getattr(reference, metric)
         axes.plot(
             reference.false_cut_in_rate, value, marker="^", markersize=8, color=REFERENCE_INK, linestyle="none",
             label="published, TurnBench test set" if index == 0 else None, zorder=5,
         )  # fmt: skip
         axes.annotate(
-            reference.name.removesuffix(" (published)"), (reference.false_cut_in_rate, value),
+            reference.name, (reference.false_cut_in_rate, value),
             xytext=(-6, -14), textcoords="offset points", ha="left", color=MUTED_INK, fontsize=7,
         )  # fmt: skip
 
@@ -341,7 +367,7 @@ def plot_against_false_cut_in_rate(
             color=INK,
             fontsize=8,
         )
-    if any(result.held_out is not None for result in results):
+    if has_held_out(results):
         mark_held_out(axes, results, metric)
     axes.set_title(title, color=INK, loc="left")
     axes.set_xlabel("False-cut-in rate (share of mid-turn pauses fired in)", color=INK)
@@ -355,7 +381,7 @@ def plot_against_false_cut_in_rate(
     for side in ("left", "bottom"):
         axes.spines[side].set_color(MUTED_INK)
     axes.tick_params(colors=MUTED_INK)
-    if len(results) > 1 or any(result.held_out is not None for result in results):  # else the title names the line
+    if len(results) > 1 or has_held_out(results):  # else the title names the line
         axes.legend(frameon=False, labelcolor=INK, fontsize=8)
     figure.tight_layout()
     figure.savefig(path)
