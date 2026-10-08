@@ -79,7 +79,7 @@ Full table: [`results/models/combined/stress_test.md`](../results/models/combine
 | 32 | 18 | 1800 | 2300 | 2500 |
 | 64 | 17 | 3600 | 4600 | 5000 |
 
-**Does the <100 ms target hold?** No, for the same reason as the audio-only model: wav2vec2 dominates. Alone, a combined request takes about 10 ms longer than an audio-only one (140 ms against 130 ms at p50), the cost of the text encoder and the three-weight fusion. Under load, throughput saturates at about 20 req/s against the audio-only model's 30, since every request runs both encoders on the same worker threads. No request failed. What it would take in production is the audio-only model's list above. Given the result in [What the combined model adds to audio](#what-are-the-limits-of-the-current-solution), the audio-only model is the one to serve until the text model improves.
+**Does the <100 ms target hold?** No, for the same reason as the audio-only model: wav2vec2 dominates. Alone, a combined request takes about 10 ms longer than an audio-only one (140 ms against 130 ms at p50), the cost of the text encoder and the three-weight fusion. Under load, throughput saturates at about 20 req/s against the audio-only model's 30, since every request runs both encoders on the same worker threads. No request failed. What it would take in production is the audio-only model's list above. Given the result in [What the combined model adds to audio](#what-are-the-limits-of-the-current-solution), the audio-only model is the one to serve until the text classifier improves.
 
 ## Assumptions
 
@@ -203,7 +203,7 @@ Annotators use the TurnBench protocol (three annotators, 2-of-3 agreement within
 
 - **The fusion head ignores the text.** The final head's weights are 3.36 on P_audio, −0.42 on P_text and −0.12 per second of silence: P_text gets a small weight of the wrong sign. This is what the text classifier's near-chance ranking predicts (out-of-fold AUC 0.51, see [Why the text model barely beats the baseline](#what-are-the-limits-of-the-current-solution)). Fusing a signal that carries no information can only add noise.
 - **Its probabilities are out of fold.** The fusion head is trained on P_audio and P_text from base heads that never saw the conversation's speaker group, and for the evaluation this is nested: the fusion head that scores a group never saw it, directly or through the base heads. The gap to the audio-only model is therefore not overfitting of the fusion head, and with three weights there is little to overfit.
-- **The text has to improve first.** The cheap text fixes listed above (only the end of the turn, handcrafted features, a language model's end-of-turn probability) are where the combined model's gain would come from; the fusion and firing rule need no change.
+- **The text classifier has to improve first.** The cheap text fixes listed above (only the end of the turn, handcrafted features, a language model's end-of-turn probability) are where the combined model's gain would come from; the fusion and firing rule need no change.
 
 **Data.**
 

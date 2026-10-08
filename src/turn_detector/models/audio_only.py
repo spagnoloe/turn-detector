@@ -40,7 +40,7 @@ from turn_detector.model import EPSILON_S, HORIZON_S, STEP_S, Audio, SpeakerSide
 from turn_detector.models.classified import (
     Fitted,
     LogisticHead,
-    Request,
+    PredictionInputs,
     ScoredPause,
     Serving,
     SideKey,
@@ -53,6 +53,7 @@ from turn_detector.models.classified import (
     save_json,
     scored_steps,
     side_key,
+    step_times,
     train_head,
 )
 from turn_detector.models.classified import fit as fit_classified
@@ -187,8 +188,7 @@ def heard_pauses(
     if side.audio is None:
         raise ValueError("a model that listens needs the user's audio")
     found = pauses(side)
-    times = [t for pause in found for t in pause.steps]
-    silence_s = np.array([t - pause.end for pause in found for t in pause.steps])
+    times, silence_s = step_times(found)
     scores = []
     for start in range(0, len(times), WINDOWS_PER_BATCH):
         batch = times[start : start + WINDOWS_PER_BATCH]
@@ -214,7 +214,7 @@ class AudioOnly:
     def fire(self, side: SpeakerSide) -> list[float]:
         return firings(scored_pauses(side, self.classifier), self.threshold, self.backstop_s)
 
-    def predict(self, request: Request) -> float:
+    def predict(self, request: PredictionInputs) -> float:
         assert request.window is not None and request.silence_s is not None
         [p_eot] = self.classifier.p_eot(request.window, np.array([request.silence_s]))
         return float(p_eot)

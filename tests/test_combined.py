@@ -10,7 +10,7 @@ import pytest
 
 from turn_detector.model import Audio, Segment, SpeakerSide
 from turn_detector.models.audio_only import AudioClassifier
-from turn_detector.models.classified import LogisticHead, Request
+from turn_detector.models.classified import LogisticHead, PredictionInputs
 from turn_detector.models.combined import Combined, CombinedClassifier, load_combined, save_combined
 from turn_detector.models.text_only import TextClassifier, TextContext
 
@@ -97,7 +97,7 @@ def test_reads_the_text_finalised_at_the_latest_segment_end_the_asr_has_delivere
 
 
 def test_predicts_from_one_request():
-    request = Request(np.zeros((1, 16_000), np.float32), "Where to?", "Barcelona.", 0.25)
+    request = PredictionInputs(np.zeros((1, 16_000), np.float32), "Where to?", "Barcelona.", 0.25)
     assert Combined(FullStop(), threshold=0.5, backstop_s=1.0).predict(request) == 1.0
 
 

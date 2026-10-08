@@ -23,9 +23,9 @@ COPY artifacts/audio-only/audio-only.json artifacts/audio-only/
 COPY artifacts/combined/combined.json artifacts/combined/
 # Download the encoders the saved heads were trained on, and check the models load and predict.
 RUN .venv/bin/python -c "import numpy as np; \
-from turn_detector.models.classified import Request; \
+from turn_detector.models.classified import PredictionInputs; \
 from turn_detector.serving import load_models; \
-print([model.predict(Request(np.zeros((1, 16000), np.float32), 'Where to?', 'Barcelona.', 0.0)) for model in load_models()])"
+print([model.predict(PredictionInputs(np.zeros((1, 16000), np.float32), 'Where to?', 'Barcelona.', 0.0)) for model in load_models()])"
 
 FROM python:3.14.8-slim
 RUN useradd --create-home --uid 1000 app

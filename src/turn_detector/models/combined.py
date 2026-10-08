@@ -18,7 +18,7 @@ and P_text from base classifiers that never saw the conversation's speaker group
 the audio-only head's pause samples: every 50 ms step up to 1 s into each labelled pause, labelled
 by whether it is a gold EOT or a mid-turn pause. For the evaluation this is nested: the fusion head
 that scores a speaker group is trained on the other groups, each scored by base classifiers trained
-without both groups, so no conversation's labels reach the model that scores it. The base
+without both groups, so no conversation's labels reach the classifier that scores it. The base
 classifiers are trained exactly as the text-only and audio-only models' are.
 """
 
@@ -38,7 +38,7 @@ from turn_detector.models.audio_only import TRAINED_PAUSE_S, AudioClassifier, Au
 from turn_detector.models.classified import (
     Fitted,
     LogisticHead,
-    Request,
+    PredictionInputs,
     ScoredPause,
     Serving,
     SideKey,
@@ -51,10 +51,11 @@ from turn_detector.models.classified import (
     save_json,
     scored_steps,
     side_key,
+    step_times,
     train_head,
 )
 from turn_detector.models.classified import fit as fit_classified
-from turn_detector.models.text_only import SentenceEncoder, TextClassifier, TextContext, TextTraining, text_read_at
+from turn_detector.models.text_only import SentenceEncoder, TextClassifier, TextContext, TextTraining, request_context, text_read_at
 
 NAME = "combined"
 ARTIFACT_PATH = ARTIFACTS_DIR / NAME / "combined.json"
@@ -111,10 +112,9 @@ class Combined:
     def fire(self, side: SpeakerSide) -> list[float]:
         return firings(scored_pauses(side, self.classifier), self.threshold, self.backstop_s)
 
-    def predict(self, request: Request) -> float:
+    def predict(self, request: PredictionInputs) -> float:
         assert request.window is not None and request.silence_s is not None
-        context = TextContext(request.previous_turn or "", request.transcript or "")
-        [p_eot] = self.classifier.p_eot(request.window, [context], np.array([request.silence_s]))
+        [p_eot] = self.classifier.p_eot(request.window, [request_context(request)], np.array([request.silence_s]))
         return float(p_eot)
 
 
@@ -178,11 +178,9 @@ class CombinedTraining:
 
     def step_features(self, side: SpeakerSide, text: TextClassifier, audio: AudioClassifier) -> np.ndarray:
         """The fusion head's features at every 50 ms step of the side's pauses, in step order."""
-        found = pauses(side)
-        times = [t for pause in found for t in pause.steps]
+        times, silence_s = step_times(pauses(side))
         if side_key(side) not in self.contexts:
             self.contexts[side_key(side)] = text_read_at(side, times)
-        silence_s = np.array([t - pause.end for pause in found for t in pause.steps])
         return fusion_features(self.audio.p_audio(side, audio), p_text(text, self.contexts[side_key(side)]), silence_s)
 
     def fusion_samples(

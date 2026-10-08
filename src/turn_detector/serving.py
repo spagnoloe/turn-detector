@@ -27,8 +27,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from turn_detector.models import audio_only, combined, text_only
 from turn_detector.models.audio_only import AudioClassifier, load_audio_only
-from turn_detector.models.classified import Request as Inputs
-from turn_detector.models.classified import Serving
+from turn_detector.models.classified import PredictionInputs, Serving
 from turn_detector.models.combined import load_combined
 from turn_detector.models.text_only import TextClassifier, load_text_only
 
@@ -69,10 +68,10 @@ class PredictRequest(BaseModel):
             raise ValueError("a request with audio needs silence_ms, which a model hearing audio hears too")
         return self
 
-    def inputs(self) -> Inputs:
+    def inputs(self) -> PredictionInputs:
         window = None if self.audio is None else samples(self.audio)
         silence_s = None if self.silence_ms is None else self.silence_ms / 1000
-        return Inputs(window, self.previous_turn, self.transcript, silence_s)
+        return PredictionInputs(window, self.previous_turn, self.transcript, silence_s)
 
 
 class PredictResponse(BaseModel):
@@ -104,7 +103,7 @@ class Served(Protocol):
     @property
     def backstop_s(self) -> float: ...
 
-    def predict(self, request: Inputs) -> float: ...
+    def predict(self, request: PredictionInputs) -> float: ...
 
 
 def load_models() -> list[Served]:
@@ -124,7 +123,7 @@ def create_app(load: Callable[[], Sequence[Served]] = load_models) -> FastAPI:
             raise ValueError(f"expected the models {sorted(SERVED_BY_NAME)}, got {sorted(models)}")
         # Load the encoders now, not on the first request.
         for model in models.values():
-            model.predict(Inputs(samples(bytes(AUDIO_BYTES)), "", "", 0.0))
+            model.predict(PredictionInputs(samples(bytes(AUDIO_BYTES)), "", "", 0.0))
         app.state.models = models
         yield
 

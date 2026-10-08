@@ -36,7 +36,7 @@ from turn_detector.model import EPSILON_S, SpeakerSide
 from turn_detector.models.classified import (
     Fitted,
     LogisticHead,
-    Request,
+    PredictionInputs,
     ScoredPause,
     Serving,
     check_encoder,
@@ -120,6 +120,11 @@ def text_read_at(side: SpeakerSide, times: Sequence[float]) -> list[TextContext]
             at_end[ends[i - 1]] = text_context(side, ends[i - 1])
         contexts.append(at_end[ends[i - 1]])
     return contexts
+
+
+def request_context(request: PredictionInputs) -> TextContext:
+    """The context a prediction request carries; missing text reads as empty."""
+    return TextContext(request.previous_turn or "", request.transcript or "")
 
 
 def classifier_input(context: TextContext) -> str:
@@ -222,8 +227,8 @@ class TextOnly:
     def fire(self, side: SpeakerSide) -> list[float]:
         return firings(scored_pauses(side, self.classifier), self.threshold, self.backstop_s)
 
-    def predict(self, request: Request) -> float:
-        [p_eot] = self.classifier.p_eot([TextContext(request.previous_turn or "", request.transcript or "")])
+    def predict(self, request: PredictionInputs) -> float:
+        [p_eot] = self.classifier.p_eot([request_context(request)])
         return float(p_eot)
 
 

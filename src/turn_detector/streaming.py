@@ -27,7 +27,8 @@ from typing import Any, Literal
 import numpy as np
 from scipy.signal import resample_poly
 
-from turn_detector.model import EPSILON_S, HORIZON_S, Audio, SpeakerSide, next_speech_start, steps
+from turn_detector.model import EPSILON_S, Audio, SpeakerSide
+from turn_detector.models.classified import pauses
 from turn_detector.models.text_only import text_read_at
 from turn_detector.serving import AUDIO_SAMPLE_RATE, AUDIO_SAMPLES, SERVED_BY_NAME
 
@@ -64,9 +65,9 @@ def stream(side: SpeakerSide, predict: Predict, audio: np.ndarray | None = None,
     transcript and the previous turn are sent unless `text` is False.
     """
     firings = []
-    for end in sorted({segment.end for segment in side.segments}):
-        times = list(steps(end, min(next_speech_start(side, end), side.duration_s, end + HORIZON_S)))
-        for t, context in zip(times, text_read_at(side, times)):
+    for pause in pauses(side):
+        end = pause.end
+        for t, context in zip(pause.steps, text_read_at(side, pause.steps)):
             payload: dict[str, Any] = {"silence_ms": (t - end) * 1000}
             if text:
                 payload |= {"transcript": context.turn_so_far, "previous_turn": context.previous_turn}

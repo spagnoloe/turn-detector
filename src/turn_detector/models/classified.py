@@ -44,6 +44,13 @@ class Pause:
     steps: list[float]
 
 
+def step_times(pauses: Sequence[Pause]) -> tuple[list[float], np.ndarray]:
+    """Every 50 ms step of the pauses, in step order, and the silence so far at each."""
+    times = [t for pause in pauses for t in pause.steps]
+    silence_s = np.array([t - pause.end for pause in pauses for t in pause.steps])
+    return times, silence_s
+
+
 def pauses(side: SpeakerSide) -> list[Pause]:
     """Every distinct segment end of the user's, in time order, as a pause."""
     result = []
@@ -236,7 +243,7 @@ def fit[C](
 
 
 @dataclass(frozen=True)
-class Request:
+class PredictionInputs:
     """One prediction request, decoded: the last 1 s of the user's audio at 16 kHz as one row of
     samples in [-1, 1), the agent's previous turn, the user's turn so far as the ASR has finalised
     it, and the silence so far. Each is None when the caller didn't send it."""
@@ -258,7 +265,7 @@ class Serving:
     needs_transcript: bool
     earliest_firing_s: float = 0.0
 
-    def answers(self, request: Request) -> bool:
+    def answers(self, request: PredictionInputs) -> bool:
         return (request.window is not None or not self.needs_audio) and (
             request.transcript is not None or not self.needs_transcript
         )
