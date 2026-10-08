@@ -39,6 +39,7 @@ copy() {
 
 link data
 link docs/assignment
+link docs/chats
 copy .env
 copy .envrc
 

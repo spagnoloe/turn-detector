@@ -223,7 +223,7 @@ __marimo__/
 # No trailing slash, so worktree symlinks are ignored too
 /docs/assignment
 # Exported planning chats (kept local only)
-docs/chats/
+/docs/chats
 
 # macOS Finder metadata
 .DS_Store
