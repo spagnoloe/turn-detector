@@ -5,12 +5,17 @@ description = "Causal end-of-turn detector for voice agents, evaluated on TurnBe
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "fastapi>=0.142.4",
     "huggingface-hub>=1.17.0",
     "matplotlib>=3.11.2",
     "pyarrow>=24.0.0",
     "scikit-learn>=1.9.1",
+    "scipy>=1.18.1",
     "sentence-transformers>=6.1.0",
+    "soundfile>=0.13.1",
+    "torch>=2.14.1",
     "turnbench",
+    "uvicorn[standard]>=0.54.0",
 ]
 
 [build-system]
@@ -19,9 +24,18 @@ build-backend = "uv_build"
 
 [tool.uv.sources]
 turnbench = { git = "https://github.com/SesameAILabs/turnbench", rev = "38a6f874322430cb3ca71d8a52aa1e636e88bad8" }
+# The Docker image is CPU-only: on Linux, take torch from PyTorch's CPU index, without CUDA.
+torch = { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.13.1",
+    "locust>=2.46.7",
     "pytest>=9.1.1",
     "ty>=0.0.85",
 ]

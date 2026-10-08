@@ -11,6 +11,7 @@ import pytest
 from turn_detector.model import Segment, SpeakerSide
 from turn_detector.models.text_only import (
     LogisticHead,
+    SentenceEncoder,
     TextContext,
     TextClassifier,
     TextOnly,
@@ -128,3 +129,27 @@ def test_loading_with_a_different_encoder_fails(tmp_path):
     other.name = "another encoder"
     with pytest.raises(ValueError, match="encoder"):
         load_text_only(path, encoder=other)
+
+
+class FakeTransformer:
+    def encode(self, texts, **kwargs):
+        return np.stack([np.full(4, len(text), dtype=float) for text in texts])
+
+
+def encoder_with_fake_transformer(**kwargs) -> SentenceEncoder:
+    encoder = SentenceEncoder(**kwargs)
+    encoder.__dict__["transformer"] = FakeTransformer()  # fills the cached_property, so nothing is downloaded
+    return encoder
+
+
+def test_the_encoder_remembers_embeddings_by_default():
+    encoder = encoder_with_fake_transformer()
+    encoder(["Hi.", "Where to?"])
+    assert set(encoder.cache) == {"Hi.", "Where to?"}
+
+
+def test_a_served_encoder_remembers_nothing():
+    # A server sees endless new transcripts; remembering them all would grow without bound.
+    encoder = encoder_with_fake_transformer(remember=False)
+    assert encoder(["Hi.", "Where to?"]).tolist() == [[3.0] * 4, [9.0] * 4]
+    assert encoder.cache == {}

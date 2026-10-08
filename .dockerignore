@@ -1,0 +1,8 @@
+# Only what the image needs: the project, its lockfile and the trained text-only model.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!artifacts/text-only/
+**/__pycache__
