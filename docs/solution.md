@@ -13,7 +13,7 @@ The detector decides, during each pause in the user's speech, whether the user h
 
 Each trained model fires when its P(EOT) reaches a threshold, or else at a silence backstop. The two knobs are chosen by cross-validation with one speaker group held out per fold, using TurnBench's rule: the highest recall at a false-cut-in rate of 0.10 or less. Everything is scored with TurnBench's own EOT scorer. The models are served by a stateless FastAPI service in a CPU Docker image and stress-tested with Locust. How to run all of it is in the [README](../README.md).
 
-**Result: on the held-out conversations, no trained model beats the silence timeout.** All four reach a recall of 0.85–0.88. All four also exceed the 0.10 false-cut-in budget (0.125–0.142), because the held-out speakers pause longer within their turns than the development speakers. The audio-only model is the only one that fires early with any regularity (p10 detection latency 551 ms), but its later backstop costs median latency. Text-only requests meet the <100 ms request-latency target on the laptop. Audio requests do not (about 130 ms alone), a limitation of running everything on one MacBook Air ([ADR 0002](adr/0002-laptop-only-compute.md)).
+**Result: on the held-out conversations, no trained model beats the silence timeout** (likely reasons in [Why no trained model beats the timeout](#why-no-trained-model-beats-the-timeout)). All four reach a recall of 0.85–0.88. All four also exceed the 0.10 false-cut-in budget (0.125–0.142), because the held-out speakers pause longer within their turns than the development speakers. The audio-only model is the only one that fires early with any regularity (p10 detection latency 551 ms), but its later backstop costs median latency. Text-only requests meet the <100 ms request-latency target on the laptop. Audio requests do not (about 130 ms alone), a limitation of running everything on one MacBook Air ([ADR 0002](adr/0002-laptop-only-compute.md)).
 
 ## Results
 
@@ -74,6 +74,53 @@ The figures show each model's development sweep: at each false-cut-in rate, the 
 ### Request latency
 
 Text-only requests meet the <100 ms target with margin, up to 8 requests in flight (p99 45 ms). **Audio and combined requests miss it** on the laptop container: about 130 ms and 140 ms even alone. This is a limitation of running everything on one MacBook Air ([ADR 0002](adr/0002-laptop-only-compute.md)): Docker Desktop's Linux VM, torch's slower Linux CPU build, one CPU thread per worker and no GPU. The same encoder takes about 24 ms per window natively on macOS. The reasons and the production fixes (GPU or an optimised CPU runtime, batching, a smaller encoder, streaming over a WebSocket) are in [Serving and request latency](#serving-and-request-latency).
+
+## Why no trained model beats the timeout
+
+This is the central result, so this section sets out what it does and does not mean, and the likely reasons. The reasons are hypotheses: each comes with the evidence we have and the check that would confirm or rule it out. None of the checks has been run.
+
+**What "does not beat" means.** At TurnBench's operating point (the highest recall at a false-cut-in rate of 0.10 or less), no trained model reaches clearly higher recall than the silence timeout. It does not mean the models learned nothing. The audio-only model fires early on the pauses it is sure of (p10 detection latency 513 ms on development, 551 ms held-out), and elsewhere on its curve it trades a little recall for a lot of speed: recall 0.840 at a median detection latency of 936 ms, against the timeout's 0.857 at 1150 ms, at the same false-cut-in rate (see [What the audio-only model adds](#what-are-the-limits-of-the-current-solution)).
+
+In order of how much we think each one matters:
+
+1. **The metric leaves little to win, and rewards recall, not speed.**
+   - The timeout already reaches a recall of about 0.86, and its 1150 ms setting uses almost the whole false-cut-in budget (0.098 of 0.10) on its own.
+   - A trained model's real gain is firing earlier. The selection rule counts speed only as a tie-break, so it never trades recall for it.
+   - To raise recall, a model has to fire within the first second on exactly the EOTs the timeout misses (199 on development). Our guess is that these are mostly EOTs where the user spoke again before the timeout, which leaves no room for early firing that doesn't also cut in.
+   - *Check:* measure, for each EOT the timeout misses, how long the silence lasted before the user spoke again. Also compare the models' detection latency at a fixed recall, not their recall at a fixed false-cut-in rate.
+2. **Whether a pause becomes an EOT depends on the listener, and the models don't hear the listener.**
+   - TurnBench is casual conversation between two people. A pause becomes an EOT when the other person takes the floor, and a mid-turn pause when they don't. The speaker can sound the same either way.
+   - Our models hear only the user's channel (the text model also reads the other speaker's previous turn), so part of the decision is invisible to them.
+   - Evidence: 536 of the 711 development mid-turn pauses come right after a sentence ending in a full stop. The speaker finished a thought, nobody took the floor, and they went on. VAP, which clearly beats the timeout, models both speakers' audio together.
+   - *Check:* add features of the other speaker (a backchannel just now, time since they last spoke) and see whether the ranking improves; or listen to 20 mid-turn pauses that follow a full stop and judge whether a person could tell them from EOTs.
+3. **There is too little data for the cues beyond silence.**
+   - About 5 h from 26 conversations gives roughly 1,400 EOTs and 700 mid-turn pauses. That is enough to learn "the longer the silence, the more likely the turn is over", which the timeout already uses. It is not enough to learn subtle prosodic or wording cues that hold across speakers.
+   - Evidence:
+     - The audio head needed very strong regularisation (C = 1e-4) to beat the silence duration at all, and ranks EOTs only a little better than silence alone (AUC 0.69 against 0.63 inside pauses).
+     - The held-out speakers behave differently: the same timeout's false-cut-in rate rises from 0.098 to 0.142.
+     - VAP and Smart Turn were trained on hundreds to thousands of hours.
+   - *Check:* a learning curve. Train on half, three quarters and all of the development conversations; if the out-of-fold AUC is still rising at full size, data is the bottleneck.
+4. **The encoders and heads miss the right cues.**
+   - *Text:* a mean-pooled sentence embedding captures the topic, not whether the sentence is finished. It reaches an AUC of 0.51, where three handcrafted features reach 0.65, so the transcripts hold signal this encoder misses (see [Why the text model barely beats the baseline](#what-are-the-limits-of-the-current-solution)).
+   - *Audio:*
+     - `wav2vec2-base` was trained to recognise speech sounds, not intonation.
+     - Averaging over a 1 s window blurs the final pitch fall or lengthened last syllable that signals a turn end.
+     - There are no explicit pitch or energy features, and after about 1 s of silence the window holds no speech at all.
+   - *Heads:* every head is linear and the fusion is late, so the combined model cannot learn interactions such as "a falling pitch matters only after a complete clause".
+   - We rank this below the first three: better features would sharpen the ranking, but would not recover the listener's part of the decision or the recall the timeout already has.
+   - *Check:* add pitch (F0) and energy-slope features from the last 300 ms of speech to the audio head, and score text with a small language model's end-of-turn probability. A clear AUC gain would mean the features were the limit.
+5. **The setup flatters the timeout.**
+   - Every model is given the annotators' segment ends, a perfect VAD.
+   - A timeout depends on nothing but silence timing, so it is the model hurt most by a real VAD's jitter and clipped speech. Here it gets its best possible input.
+   - *Check:* re-run the timeout on segment ends with ±100–200 ms of jitter, or on a real VAD such as Silero, and compare its drop with the audio model's.
+6. **The test set is too small to see small wins.** The held-out conversations have 512 EOTs and 352 mid-turn pauses: a 95% interval of about ±0.03 on recall and ±0.04 on the false-cut-in rate, and wider in truth, since one conversation's pauses are correlated. Differences of 0.01–0.02 between the models are within noise. Part of "does not beat" is "cannot be told apart".
+
+**What would change the result.** In order:
+
+- More data, ideally production calls.
+- A model that hears both sides of the conversation, as VAP does.
+- Features made for turn ends: prosody for audio, a language model's end-of-turn probability for text.
+- An operating point that values speed, chosen per deployment: for example, the lowest median detection latency at the timeout's recall.
 
 ## Serving and request latency
 
