@@ -8,7 +8,7 @@ _To be completed with the held-out evaluation (#9)._
 
 ## Serving and request latency
 
-The text-only and audio-only models are served by one stateless FastAPI service in a CPU Docker image (see the [README](../README.md#serving)). A request with audio is answered by the audio-only model, and any other request by the text-only model. The stress test sends real requests to the container with Locust, with each simulated caller sending requests back to back: the last 1 s of audio, the transcript so far, the previous turn and the silence duration, sampled from streaming a held-out conversation. For the text-only model, the requests were measured before the audio model existed, so they still carried the (then unused) audio; `--no-audio` now leaves it out.
+The text-only, audio-only and combined models are served by one stateless FastAPI service in a CPU Docker image (see the [README](../README.md#serving)). A request with audio and a transcript is answered by the combined model, one with audio only by the audio-only model, and any other request by the text-only model. The stress test sends real requests to the container with Locust, with each simulated caller sending requests back to back: the last 1 s of audio, the transcript so far, the previous turn and the silence duration, sampled from streaming a held-out conversation. For the text-only model, the requests were measured before the audio model existed, so they still carried the (then unused) audio; `--no-audio` now leaves it out. For the audio-only model, they were measured before the combined model existed, so they still carried the (then unused) text; `--no-text` now leaves it out.
 
 **Everything here ran on one MacBook Air** (ADR 0002): the container, Docker Desktop's Linux VM and the load generator all share the laptop's 10 CPU cores, with no GPU available to the container. These numbers show where the service's limits lie on that machine. They are not what a production server would do.
 
@@ -64,6 +64,22 @@ Full table: [`results/models/audio-only/stress_test.md`](../results/models/audio
 - run the encoder on a GPU, or on a server CPU with an optimised runtime (ONNX Runtime, int8 quantisation), and batch concurrent requests into one encoder call;
 - use a smaller or distilled audio encoder: the head reads only layer 8, and the wav2vec2 features barely beat the silence duration (see [What the audio-only model adds](#what-are-the-limits-of-the-current-solution));
 - stream audio over a per-call WebSocket (see [How does it fit into a voice-agent architecture?](#how-does-it-fit-into-a-voice-agent-architecture)), so the server keeps each 50 ms of audio's convolutional features and only re-runs the transformer layers on each step, instead of re-encoding the whole 1 s on every request.
+
+### Combined requests
+
+Full table: [`results/models/combined/stress_test.md`](../results/models/combined/stress_test.md). Same image, same setup; each request carries audio and text, so it runs both encoders.
+
+| Requests in flight | Throughput (req/s) | p50 (ms) | p95 (ms) | p99 (ms) |
+|---:|---:|---:|---:|---:|
+| 1 | 7.1 | 140 | 140 | 150 |
+| 2 | 12 | 170 | 180 | 180 |
+| 4 | 16 | 250 | 260 | 270 |
+| 8 | 20 | 400 | 430 | 440 |
+| 16 | 19 | 870 | 1100 | 1200 |
+| 32 | 18 | 1800 | 2300 | 2500 |
+| 64 | 17 | 3600 | 4600 | 5000 |
+
+**Does the <100 ms target hold?** No, for the same reason as the audio-only model: wav2vec2 dominates. Alone, a combined request takes about 10 ms longer than an audio-only one (140 ms against 130 ms at p50), the cost of the text encoder and the three-weight fusion. Under load, throughput saturates at about 20 req/s against the audio-only model's 30, since every request runs both encoders on the same worker threads. No request failed. What it would take in production is the audio-only model's list above. Given the result in [What the combined model adds to audio](#what-are-the-limits-of-the-current-solution), the audio-only model is the one to serve until the text classifier improves.
 
 ## Assumptions
 
@@ -182,6 +198,12 @@ Annotators use the TurnBench protocol (three annotators, 2-of-3 agreement within
 - **Without the backstop, the model missed many EOTs.** At first the audio model fired only on the threshold, as issue #6 specified. At its best threshold, 29% of the development EOTs never got a firing: in 229 the user spoke again before P_audio reached the threshold, and in 177 it stayed below the threshold for 3 s of silence. Its recall was 0.707. The backstop catches those pauses as the baseline would, so the model can never do worse than the baseline on the data it is tuned on.
 - **The audio carries some signal, but not much.** P_audio at the very start of a pause, before any silence has built up, has a median of 0.39 for EOTs against 0.27 for mid-turn pauses. On a third of the development conversations, wav2vec2 features plus the silence duration ranked EOT steps above mid-turn steps with an out-of-fold AUC of 0.69 inside pauses, against 0.63 for the silence duration alone, and 0.68 against 0.50 at the pause start. With 1537 features and about 50,000 correlated samples from 26 conversations, the head needed very strong regularisation (C = 1e-4) to beat silence alone at all.
 - **It is trained only up to 1 s into a pause** but listens up to 3 s in. Beyond 1 s the window is all silence and the head extrapolates on the silence duration. With the backstop at 1.5 s, this matters only between 1 and 1.5 s into a pause.
+
+**What the combined model adds to audio.** Nothing, on this data. It fuses P_audio, the latest P_text and the silence duration with a logistic regression, and fires with the audio-only model's rule, so the comparison isolates the text. At its chosen setting (P ≥ 0.926, backstop 1150 ms) its cross-validated recall is 0.856 against the audio-only model's 0.866, at a false-cut-in rate of 0.122 against 0.113 ([`results/comparison/results.md`](../results/comparison/results.md)). Its median detection latency is lower, 1150 ms against 1300 ms, only because the chosen backstop is shorter.
+
+- **The fusion head ignores the text.** The final head's weights are 3.36 on P_audio, −0.42 on P_text and −0.12 per second of silence: P_text gets a small weight of the wrong sign. This is what the text classifier's near-chance ranking predicts (out-of-fold AUC 0.51, see [Why the text model barely beats the baseline](#what-are-the-limits-of-the-current-solution)). Fusing a signal that carries no information can only add noise.
+- **Its probabilities are out of fold.** The fusion head is trained on P_audio and P_text from base heads that never saw the conversation's speaker group, and for the evaluation this is nested: the fusion head that scores a group never saw it, directly or through the base heads. The gap to the audio-only model is therefore not overfitting of the fusion head, and with three weights there is little to overfit.
+- **The text classifier has to improve first.** The cheap text fixes listed above (only the end of the turn, handcrafted features, a language model's end-of-turn probability) are where the combined model's gain would come from; the fusion and firing rule need no change.
 
 **Data.**
 

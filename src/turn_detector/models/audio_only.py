@@ -1,9 +1,10 @@
 """The audio-only model: does the way the user stopped speaking sound like the end of their turn?
 
 Every 50 ms while the user is silent, the classifier hears the user's last 1 s of audio, resampled
-to 16 kHz, and the silence duration so far, and outputs P_audio(EOT). The firing rule: in each
-pause, fire on the rising edge where P_audio first reaches the threshold, or at a silence backstop
-if that comes first, at most once per pause and only while the user is still silent. The
+to 16 kHz, and the silence duration so far, and outputs P_audio(EOT). The firing rule is the one
+every trained model shares (`turn_detector.models.classified`): in each pause, fire on the rising
+edge where P_audio first reaches the threshold, or at a silence backstop if that comes first, at
+most once per pause and only while the user is still silent. The
 threshold and the backstop are the two knobs, tuned together, as for the text-only model; with
 the threshold above every P_audio, the model is the baseline with the backstop as its timeout.
 The model stops listening 3 s into a pause, since TurnBench never counts a later firing as a hit.
@@ -24,8 +25,8 @@ once; training heads and sweeping thresholds then take seconds.
 import hashlib
 import json
 import math
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from typing import Protocol
@@ -35,9 +36,27 @@ from scipy.signal import resample_poly
 
 from turn_detector.data import ARTIFACTS_DIR, DATA_DIR, load_audio
 from turn_detector.evaluation import EvaluationConversation
-from turn_detector.model import EPSILON_S, HORIZON_S, STEP_S, Audio, Setting, SpeakerSide, next_speech_start, steps
-from turn_detector.models.text_only import LogisticHead
-from turn_detector.split import speaker_groups
+from turn_detector.model import EPSILON_S, HORIZON_S, STEP_S, Audio, SpeakerSide
+from turn_detector.models.classified import (
+    Fitted,
+    LogisticHead,
+    PredictionInputs,
+    ScoredPause,
+    Serving,
+    SideKey,
+    check_encoder,
+    firings,
+    gold_pause_labels,
+    head_from_json,
+    head_json,
+    pauses,
+    save_json,
+    scored_steps,
+    side_key,
+    step_times,
+    train_head,
+)
+from turn_detector.models.classified import fit as fit_classified
 
 NAME = "audio-only"
 ENCODER = "facebook/wav2vec2-base"
@@ -60,6 +79,8 @@ LAST_SPEECH_FRAMES = 10  # 200 ms: how the speech ended
 WINDOWS_PER_BATCH = 256  # windows cut and encoded at once, to bound memory
 ARTIFACT_PATH = ARTIFACTS_DIR / NAME / "audio-only.json"
 FEATURE_CACHE_DIR = DATA_DIR / "cache" / NAME
+# Answers requests that carry audio (and so the silence duration), from the first step of a pause.
+SERVING = Serving(NAME, needs_audio=True, needs_transcript=False)
 
 
 def windows(audio: Audio, times: Sequence[float]) -> np.ndarray:
@@ -136,16 +157,10 @@ class Wav2Vec2Encoder:
         return np.concatenate(frames)
 
 
-def train_head(features: np.ndarray, labels: np.ndarray) -> LogisticHead:
+def train_audio_head(features: np.ndarray, labels: np.ndarray) -> LogisticHead:
     """Fit the head: strongly L2-regularised logistic regression on standardised features, labels
-    True for EOT. The standardisation is folded into the weights, so the head reads raw features."""
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.preprocessing import StandardScaler
-
-    scaler = StandardScaler().fit(features)
-    regression = LogisticRegression(C=REGULARISATION_C, max_iter=2000).fit(scaler.transform(features), labels)
-    weights = regression.coef_[0] / scaler.scale_
-    return LogisticHead(weights, float(regression.intercept_[0] - weights @ scaler.mean_))
+    True for EOT."""
+    return train_head(features, labels, REGULARISATION_C, standardise=True)
 
 
 class Classifier(Protocol):
@@ -165,68 +180,25 @@ class AudioClassifier:
         return self.head(features(self.encoder(windows), silence_s))
 
 
-@dataclass(frozen=True)
-class Pause:
-    """A segment end of the user's, when they stop being silent after it (they resume, the call
-    ends or the model stops listening, whichever comes first), and the 50 ms steps until then."""
-
-    end: float
-    silent_until: float
-    steps: list[float]
-
-
-def pauses(side: SpeakerSide) -> list[Pause]:
-    """Every distinct segment end of the user's, in time order, as a pause."""
-    result = []
-    for end in sorted({segment.end for segment in side.segments}):
-        silent_until = min(next_speech_start(side, end), side.duration_s, end + HORIZON_S)
-        result.append(Pause(end, silent_until, list(steps(end, silent_until))))
-    return result
-
-
-@dataclass(frozen=True)
-class ScoredPause:
-    """A pause with P_audio at each of its steps, as (time, P_audio)."""
-
-    pause: Pause
-    steps: list[tuple[float, float]]
-
-
-def scored(pauses: Sequence[Pause], p_eot: Sequence[float]) -> list[ScoredPause]:
-    """The pauses with P_audio at each step, `p_eot` holding them in step order."""
-    result, i = [], 0
-    for pause in pauses:
-        result.append(ScoredPause(pause, list(zip(pause.steps, map(float, p_eot[i : i + len(pause.steps)])))))
-        i += len(pause.steps)
-    return result
+def heard_pauses(
+    side: SpeakerSide, p_eot: Callable[[np.ndarray, Sequence[float], np.ndarray], np.ndarray]
+) -> list[ScoredPause]:
+    """Every pause of the user's, each 50 ms step scored by `p_eot(windows, times, silence_s)`, a
+    batch of steps at a time."""
+    if side.audio is None:
+        raise ValueError("a model that listens needs the user's audio")
+    found = pauses(side)
+    times, silence_s = step_times(found)
+    scores = []
+    for start in range(0, len(times), WINDOWS_PER_BATCH):
+        batch = times[start : start + WINDOWS_PER_BATCH]
+        scores.extend(p_eot(windows(side.audio, batch), batch, silence_s[start : start + WINDOWS_PER_BATCH]))
+    return scored_steps(found, scores)
 
 
 def scored_pauses(side: SpeakerSide, classifier: Classifier) -> list[ScoredPause]:
     """Every pause of the user's, each step scored by `classifier`."""
-    if side.audio is None:
-        raise ValueError("the audio-only model needs the user's audio")
-    found = pauses(side)
-    times = [t for pause in found for t in pause.steps]
-    silence_s = np.array([t - pause.end for pause in found for t in pause.steps])
-    p_eot = []
-    for start in range(0, len(times), WINDOWS_PER_BATCH):
-        batch = windows(side.audio, times[start : start + WINDOWS_PER_BATCH])
-        p_eot.extend(classifier.p_eot(batch, silence_s[start : start + WINDOWS_PER_BATCH]))
-    return scored(found, p_eot)
-
-
-def firings(pauses: Sequence[ScoredPause], threshold: float, backstop_s: float) -> list[float]:
-    """The firing rule: in each pause, fire on the rising edge where P_audio first reaches the
-    threshold, or at the backstop if that comes first, only while the user is still silent. While
-    the user speaks there is no firing, so the first step counts as an edge."""
-    firings = []
-    for scored_pause in pauses:
-        pause = scored_pause.pause
-        confident = next((t for t, p in scored_pause.steps if p >= threshold), math.inf)
-        firing = min(confident, pause.end + backstop_s)
-        if firing <= pause.silent_until + EPSILON_S:
-            firings.append(firing)
-    return firings
+    return heard_pauses(side, lambda windows, times, silence_s: classifier.p_eot(windows, silence_s))
 
 
 @dataclass(frozen=True)
@@ -242,35 +214,40 @@ class AudioOnly:
     def fire(self, side: SpeakerSide) -> list[float]:
         return firings(scored_pauses(side, self.classifier), self.threshold, self.backstop_s)
 
+    def predict(self, request: PredictionInputs) -> float:
+        assert request.window is not None and request.silence_s is not None
+        [p_eot] = self.classifier.p_eot(request.window, np.array([request.silence_s]))
+        return float(p_eot)
 
-def save_audio_only(model: AudioOnly, path: Path = ARTIFACT_PATH) -> Path:
-    """Save the head, its threshold and backstop, and the encoder's name and layer; the encoder is
-    downloaded."""
-    if not isinstance(model.classifier, AudioClassifier):
-        raise TypeError("only a model with a trained AudioClassifier can be saved")
-    classifier = model.classifier
-    path.parent.mkdir(parents=True, exist_ok=True)
-    stored = {
+
+def classifier_json(classifier: AudioClassifier) -> dict:
+    """The head and the encoder's name and layer; the encoder itself is downloaded."""
+    return {
         "encoder": classifier.encoder.name,
         "layer": getattr(classifier.encoder, "layer", LAYER),
-        "threshold": model.threshold,
-        "backstop_s": model.backstop_s,
-        "bias": classifier.head.bias,
-        "weights": classifier.head.weights.tolist(),
+        **head_json(classifier.head),
     }
-    path.write_text(json.dumps(stored, indent=2) + "\n")
-    return path
+
+
+def classifier_from_json(stored: dict, encoder: Encoder | None = None) -> AudioClassifier:
+    """The saved classifier, with its encoder loaded on the CPU (or `encoder`, which must be the
+    one it was trained on)."""
+    encoder = check_encoder(stored, encoder or Wav2Vec2Encoder(stored["encoder"], stored["layer"]))
+    return AudioClassifier(encoder, head_from_json(stored))
+
+
+def save_audio_only(model: AudioOnly, path: Path = ARTIFACT_PATH) -> Path:
+    """Save the head, its threshold and backstop, and the encoder's name and layer."""
+    if not isinstance(model.classifier, AudioClassifier):
+        raise TypeError("only a model with a trained AudioClassifier can be saved")
+    return save_json({**classifier_json(model.classifier), "threshold": model.threshold, "backstop_s": model.backstop_s}, path)
 
 
 def load_audio_only(path: Path = ARTIFACT_PATH, encoder: Encoder | None = None) -> AudioOnly:
     """The saved model, with its encoder loaded on the CPU (or `encoder`, which must be the one it
     was trained on)."""
     stored = json.loads(path.read_text())
-    encoder = encoder or Wav2Vec2Encoder(stored["encoder"], stored["layer"])
-    if encoder.name != stored["encoder"]:
-        raise ValueError(f"the head was trained on encoder {stored['encoder']!r}, not {encoder.name!r}")
-    head = LogisticHead(np.array(stored["weights"]), stored["bias"])
-    return AudioOnly(AudioClassifier(encoder, head), stored["threshold"], stored["backstop_s"])
+    return AudioOnly(classifier_from_json(stored, encoder), stored["threshold"], stored["backstop_s"])
 
 
 # Cached features. A side's features are kept for every 50 ms step the evaluation scores and every
@@ -332,86 +309,72 @@ def side_features(side: SpeakerSide, encoder: Encoder, cache_dir: Path = FEATURE
 def labelled_samples(conversation: EvaluationConversation, sides: dict[int, SideFeatures]) -> tuple[np.ndarray, np.ndarray]:
     """Features and labels: steps up to 1 s into a gold EOT (True) or mid-turn pause (False), and
     speech samples (False)."""
-    gold = conversation.gold
     rows, labels = [], []
     for side in conversation.sides:
-        eots = {event.time_s for event in gold.eot_positive_events if event.speaker == side.speaker}
-        mid_turn = {span.start for span in gold.eot_negative_spans if span.speaker == side.speaker}
+        is_eot = gold_pause_labels(conversation, side)
         found = sides[side.speaker]
         for row, t, end in zip(found.features, found.times, found.pause_ends):
             if math.isnan(end):
                 rows.append(row)
                 labels.append(False)
-            elif (end in eots or end in mid_turn) and t - end <= TRAINED_PAUSE_S + EPSILON_S:
+            elif end in is_eot and t - end <= TRAINED_PAUSE_S + EPSILON_S:
                 rows.append(row)
-                labels.append(end in eots)
+                labels.append(is_eot[end])
     return np.array(rows), np.array(labels)
 
 
-@dataclass(frozen=True)
-class CrossFitted:
-    """The audio-only model as the evaluation scores it, at one setting. Each side's steps were
-    scored once, by the head that never saw that conversation's speakers, so a sweep over settings
-    only re-applies the firing rule."""
+@dataclass
+class AudioTraining:
+    """Trains the audio classifier on some development conversations, from the features cached for
+    every side; each set of conversations is trained on once."""
 
-    pauses: dict[tuple[str, int], list[ScoredPause]]
-    threshold: float
-    backstop_s: float
-    name: str = NAME
+    conversations: Sequence[EvaluationConversation]
+    encoder: Encoder
+    trained: dict[frozenset[str], AudioClassifier] = field(default_factory=dict, repr=False)
 
-    def fire(self, side: SpeakerSide) -> list[float]:
-        return firings(self.pauses[(side.conversation_id, side.speaker)], self.threshold, self.backstop_s)
+    @cached_property
+    def features(self) -> dict[SideKey, SideFeatures]:
+        found = {}
+        for conversation in self.conversations:
+            for side in conversation.sides:
+                print(f"  features: conversation {side.conversation_id}, speaker {side.speaker}", flush=True)
+                found[side_key(side)] = side_features(side, self.encoder)
+        return found
+
+    @cached_property
+    def samples(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        return {
+            c.info.conversation_id: labelled_samples(c, {side.speaker: self.features[side_key(side)] for side in c.sides})
+            for c in self.conversations
+        }
+
+    def classifier(self, conversation_ids: Sequence[str]) -> AudioClassifier:
+        key = frozenset(conversation_ids)
+        if key not in self.trained:
+            head = train_audio_head(
+                np.concatenate([self.samples[i][0] for i in conversation_ids]),
+                np.concatenate([self.samples[i][1] for i in conversation_ids]),
+            )
+            self.trained[key] = AudioClassifier(self.encoder, head)
+        return self.trained[key]
+
+    def p_audio(self, side: SpeakerSide, classifier: AudioClassifier) -> np.ndarray:
+        """P_audio at every 50 ms step of the side's pauses, in step order, from the cached features."""
+        found = self.features[side_key(side)]
+        return classifier.head(found.features[~np.isnan(found.pause_ends)])
+
+    def scored_pauses(self, side: SpeakerSide, classifier: AudioClassifier) -> list[ScoredPause]:
+        return scored_steps(pauses(side), self.p_audio(side, classifier).tolist())
 
 
-@dataclass(frozen=True)
-class FittedAudioOnly:
-    """Every development side's steps scored by cross-fitted heads, and a head trained on all
-    conversations. A setting is (threshold, backstop in ms)."""
-
-    pauses: dict[tuple[str, int], list[ScoredPause]]
-    final_classifier: AudioClassifier
-
-    def build(self, setting: Setting) -> CrossFitted:
-        threshold, backstop_ms = setting
-        return CrossFitted(self.pauses, threshold, backstop_ms / 1000)
-
-    def save(self, setting: Setting) -> list[Path]:
-        threshold, backstop_ms = setting
-        return [save_audio_only(AudioOnly(self.final_classifier, threshold, backstop_ms / 1000))]
-
-
-def fit(conversations: Sequence[EvaluationConversation]) -> FittedAudioOnly:
+def fit(conversations: Sequence[EvaluationConversation]) -> Fitted:
     """Extract (or read the cached) features, train one head per speaker group on every other
-    group (the folds `cross_validate` uses), and a final head on every conversation."""
+    group, and a final head on every conversation."""
     import torch
 
     encoder = Wav2Vec2Encoder(device="mps" if torch.backends.mps.is_available() else "cpu")
-    found = {}
-    for conversation in conversations:
-        for side in conversation.sides:
-            print(f"  features: conversation {side.conversation_id}, speaker {side.speaker}", flush=True)
-            found[(side.conversation_id, side.speaker)] = side_features(side, encoder)
-    samples = {
-        c.info.conversation_id: labelled_samples(c, {side.speaker: found[(c.info.conversation_id, side.speaker)] for side in c.sides})
-        for c in conversations
-    }
 
-    def head_trained_on(conversation_ids: Sequence[str]) -> LogisticHead:
-        return train_head(
-            np.concatenate([samples[i][0] for i in conversation_ids]),
-            np.concatenate([samples[i][1] for i in conversation_ids]),
-        )
+    def save(classifier: AudioClassifier, threshold: float, backstop_s: float) -> Path:
+        return save_audio_only(AudioOnly(classifier, threshold, backstop_s))
 
-    all_ids = list(samples)
-    scored_by_side = {}
-    for group in speaker_groups([c.info for c in conversations]):
-        held_out = {c.conversation_id for c in group}
-        head = head_trained_on([i for i in all_ids if i not in held_out])
-        for conversation in (c for c in conversations if c.info.conversation_id in held_out):
-            for side in conversation.sides:
-                side_found = found[(side.conversation_id, side.speaker)]
-                in_pause = ~np.isnan(side_found.pause_ends)
-                scored_by_side[(side.conversation_id, side.speaker)] = scored(
-                    pauses(side), head(side_found.features[in_pause]).tolist()
-                )
-    return FittedAudioOnly(scored_by_side, AudioClassifier(encoder, head_trained_on(all_ids)))
+    return fit_classified(NAME, AudioTraining(conversations, encoder), conversations, save)

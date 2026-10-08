@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from turn_detector.model import Audio, Segment, SpeakerSide
 from turn_detector.models.audio_only import AudioOnly
+from turn_detector.models.combined import Combined
 from turn_detector.models.text_only import TextContext, TextOnly
 from turn_detector.serving import AUDIO_BYTES, create_app
 from turn_detector.streaming import Firing, audio_window, pcm_16k, stream
@@ -33,7 +34,20 @@ class AudioStub:
         return ((silence_s > self.after_s) & (silence_s < 3.2)).astype(float)
 
 
+@dataclass(frozen=True)
+class CombinedStub:
+    """P(EOT) = 1 once the user's turn so far ends with a full stop and the silence so far is over
+    `after_s`, else 0; ignores the audio."""
+
+    after_s: float
+
+    def p_eot(self, windows: np.ndarray, contexts: Sequence[TextContext], silence_s: np.ndarray) -> np.ndarray:
+        full_stop = np.array([context.turn_so_far.endswith(".") for context in contexts])
+        return (full_stop & (silence_s > self.after_s)).astype(float)
+
+
 MODEL = TextOnly(Stub(), threshold=0.5, backstop_s=1.5)
+COMBINED = Combined(CombinedStub(0.12), threshold=0.5, backstop_s=1.5)
 
 
 def side(*segments: tuple[float, float, str], other: Sequence[tuple[float, float, str]] = (), duration_s=20.0):
@@ -47,8 +61,8 @@ def side(*segments: tuple[float, float, str], other: Sequence[tuple[float, float
     )
 
 
-def served(audio_model: AudioOnly):
-    with TestClient(create_app(load_text=lambda: MODEL, load_audio=lambda: audio_model)) as client:
+def served(audio_model: AudioOnly, combined_model: Combined = COMBINED):
+    with TestClient(create_app(load=lambda: [MODEL, audio_model, combined_model])) as client:
         yield lambda payload: client.post("/predict", json=payload).raise_for_status().json()
 
 
@@ -84,7 +98,26 @@ def test_streaming_audio_through_the_api_fires_where_the_audio_model_does(user, 
     user = with_audio(user)
     assert user.audio is not None
     for predict in served(audio_model):
-        assert [f.time_s for f in stream(user, predict, pcm_16k(user.audio))] == pytest.approx(audio_model.fire(user))
+        assert [f.time_s for f in stream(user, predict, pcm_16k(user.audio), text=False)] == pytest.approx(audio_model.fire(user))
+
+
+@pytest.mark.parametrize("after_s", [0.0, 0.12, 2.92])
+@pytest.mark.parametrize(
+    "user",
+    [
+        *SIDES,
+        side((1.0, 3.0, "Hi."), (3.5, 6.0, "I'd like to")),  # the first pause's text is held into the second
+        side((1.0, 2.0, "Paris."), (2.5, 3.0, "Rome."), other=[(2.1, 2.4, "Mm.")]),  # "Mm." is not read until 3.2 s
+    ],
+)
+def test_streaming_audio_and_text_through_the_api_fires_where_the_combined_model_does(user, after_s):
+    # Fires from the first step of a pause, on the text held until the new segment's text arrives.
+    combined_model = Combined(CombinedStub(after_s), threshold=0.5, backstop_s=1.5)
+    user = with_audio(user)
+    assert user.audio is not None
+    for predict in served(AudioOnly(AudioStub(0.12), threshold=0.5, backstop_s=1.5), combined_model):
+        firings = stream(user, predict, pcm_16k(user.audio))
+        assert [f.time_s for f in firings] == pytest.approx(combined_model.fire(user))
 
 
 def test_firings_say_why_they_fired(predict):
@@ -102,7 +135,7 @@ def test_the_last_segments_text_arrives_after_the_asr_lag():
 
     def predict(payload):
         payloads.append(payload)
-        return {"p_eot": 0.0, "threshold": 0.5, "backstop_ms": 300, "model": "stub"}
+        return {"p_eot": 0.0, "threshold": 0.5, "backstop_ms": 300, "model": "text-only"}
 
     stream(side((0.0, 1.0, "Hi."), (2.0, 3.0, "Barcelona.")), predict)
     in_second_pause = payloads[-7:]  # steps at 3.0, 3.05, ..., 3.3

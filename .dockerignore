@@ -6,4 +6,5 @@
 !src/
 !artifacts/text-only/text-only.json
 !artifacts/audio-only/audio-only.json
+!artifacts/combined/combined.json
 **/__pycache__

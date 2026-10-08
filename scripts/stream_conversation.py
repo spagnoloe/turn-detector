@@ -3,10 +3,11 @@
 Each speaker in turn is the user. Every 50 ms while they are silent, the script sends what the
 orchestrator would: the last 1 s of their audio (16 kHz PCM), the transcript so far, the other
 speaker's previous turn and the silence duration; it applies the firing rule to each response
-(`turn_detector.streaming`). Requests with audio are answered by the audio-only model; with
-`--no-audio` they carry text only and the text-only model answers. It prints every firing with the pause it ended and the request
-latency the client saw. The held-out conversations are scored only once, at the end, so no gold
-events or scores are shown here.
+(`turn_detector.streaming`). Requests with audio and text are answered by the combined model;
+with `--no-text` they carry audio only and the audio-only model answers, and with `--no-audio`
+text only and the text-only model answers. It prints every firing with the pause it ended and
+the request latency the client saw. The held-out conversations are scored only once, at the end,
+so no gold events or scores are shown here.
 
     uv run uvicorn turn_detector.serving:app        # or the Docker container
     uv run python scripts/stream_conversation.py    # the first held-out conversation
@@ -30,7 +31,9 @@ def main() -> None:
     held_out = load_split().held_out
     parser.add_argument("--conversation", default=held_out[0], choices=held_out, help="a held-out conversation id")
     parser.add_argument("--url", default="http://localhost:8000")
-    parser.add_argument("--no-audio", action="store_true", help="send text only")
+    sent = parser.add_mutually_exclusive_group()
+    sent.add_argument("--no-audio", action="store_true", help="send text only")
+    sent.add_argument("--no-text", action="store_true", help="send audio only")
     args = parser.parse_args()
 
     [conversation] = load_conversations([args.conversation])
@@ -49,7 +52,7 @@ def main() -> None:
         print(f"conversation {args.conversation} ({conversation.info.conversation_type}, {conversation.duration_s:.0f} s)")
         for side in conversation.sides:
             audio = None if args.no_audio else pcm_16k(load_audio(args.conversation, side.speaker))
-            firings = stream(side, predict, audio)
+            firings = stream(side, predict, audio, text=not args.no_text)
             print(f"\nspeaker {side.speaker} as the user: {len(firings)} firings")
             for firing in firings:
                 print(

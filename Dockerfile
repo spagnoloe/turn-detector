@@ -1,9 +1,10 @@
-# The prediction API on CPU, with its dependencies, the text-only and audio-only heads and their
-# encoders' weights baked in, so it needs no network access. Train the models first (they write
-# artifacts/text-only/ and artifacts/audio-only/):
+# The prediction API on CPU, with its dependencies, the text-only, audio-only and combined heads and
+# their encoders' weights baked in, so it needs no network access. Train the models first (they
+# write artifacts/text-only/, artifacts/audio-only/ and artifacts/combined/):
 #
 #   uv run python scripts/evaluate.py text-only
 #   uv run python scripts/evaluate.py audio-only
+#   uv run python scripts/evaluate.py combined
 #   docker build -t turn-detector .
 #   docker run --rm -p 8000:8000 turn-detector
 
@@ -19,12 +20,12 @@ COPY src src
 RUN uv sync --locked --no-dev
 COPY artifacts/text-only/text-only.json artifacts/text-only/
 COPY artifacts/audio-only/audio-only.json artifacts/audio-only/
+COPY artifacts/combined/combined.json artifacts/combined/
 # Download the encoders the saved heads were trained on, and check the models load and predict.
 RUN .venv/bin/python -c "import numpy as np; \
-from turn_detector.models.text_only import TextContext, load_text_only; \
-from turn_detector.models.audio_only import load_audio_only; \
-print(load_text_only().classifier.p_eot([TextContext('Where to?', 'Barcelona.')])); \
-print(load_audio_only().classifier.p_eot(np.zeros((1, 16000), np.float32), np.zeros(1)))"
+from turn_detector.models.classified import PredictionInputs; \
+from turn_detector.serving import load_models; \
+print([model.predict(PredictionInputs(np.zeros((1, 16000), np.float32), 'Where to?', 'Barcelona.', 0.0)) for model in load_models()])"
 
 FROM python:3.14.8-slim
 RUN useradd --create-home --uid 1000 app
@@ -40,6 +41,6 @@ USER app
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=2s --start-period=30s \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=1)"]
-# uvicorn runs WEB_CONCURRENCY worker processes, each with both models loaded and OMP_NUM_THREADS
+# uvicorn runs WEB_CONCURRENCY worker processes, each with every model loaded and OMP_NUM_THREADS
 # threads for the encoders.
 CMD ["uvicorn", "turn_detector.serving:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
