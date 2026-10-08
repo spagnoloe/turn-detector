@@ -42,3 +42,7 @@ _Avoid_: system, detector (for one of the four)
 **Classifier**:
 The trained part of a model, which outputs P(EOT); the model's firing rule turns it into firings.
 _Avoid_: model (for the trained part alone)
+
+**Barge-in**:
+The user starting to speak while the agent is speaking.
+_Avoid_: interruption (TurnBench's interruption track is a different task)
