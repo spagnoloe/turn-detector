@@ -2,7 +2,7 @@
 
 The timeline is TurnBench's turn-view consensus: the floor-claiming segments that at least 2 of
 3 annotators agree on, which are the segments its gold EOTs and mid-turn pauses are anchored to.
-Their ends are the pauses every system sees, a perfect pause detector standing in for a real
+Their ends are the pauses every model sees, a perfect pause detector standing in for a real
 VAD. Two consequences: speech the annotators don't agree on is missing from the timeline, so it
 can look like a pause (firings there mostly fall in TurnBench's disputed regions, which are
 neither rewarded nor penalised); and consensus segments carry no text, so each takes the
@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from turnbench.data import ANNOTATORS, SPEAKERS, Annotation
 from turnbench.gold import TURN_CANONICAL, collect_turns, consensus_for_conversation
 
-from turn_detector.detector import Segment, SpeakerSide
+from turn_detector.model import Segment, SpeakerSide
 from turn_detector.events import turnbench_conversation
 
 

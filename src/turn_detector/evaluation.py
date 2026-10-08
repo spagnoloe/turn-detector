@@ -1,17 +1,17 @@
-"""The evaluation harness every system goes through: knob sweep, scoring and cross-validation.
+"""The evaluation harness every model goes through: knob sweep, scoring and cross-validation.
 
-Scores come from TurnBench itself. Each system's firings are validated as a TurnBench
+Scores come from TurnBench itself. Each model's firings are validated as a TurnBench
 submission (strictly increasing, finite, within the audio) and scored with its `score_task`
 against its gold EOTs and mid-turn pauses, exactly as `turnbench.score` does: a hit is the first
 firing in [EOT - 0.25 s, EOT + 3 s], any firing in a mid-turn pause is one false cut-in, and
 firings in disputed regions are ignored. Only the EOT task is scored.
 
-A system has one knob (the baseline's timeout, a model's threshold). Each conversation is scored
+A model has one knob (the silence timeout's N, a classifier's threshold). Each conversation is scored
 once per knob value; a sweep, a cross-validation fold or a held-out evaluation is then just a
 sum over a subset of conversations.
 """
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from turnbench.durations import load_durations
@@ -20,12 +20,13 @@ from turnbench.score import TaskScore, merge, score_task
 from turnbench.submission import ConversationPrediction, SpeakerEvents, validate_event_times
 
 from turn_detector.data import ConversationAnnotations, iter_annotations
-from turn_detector.detector import DetectorSystem, SpeakerSide
+from turn_detector.model import Model, SpeakerSide
 from turn_detector.events import turnbench_conversation
+from turn_detector.models import RegisteredModel
 from turn_detector.split import ConversationInfo, speaker_groups
 from turn_detector.timeline import speaker_sides
 
-# The operating-point budget: the highest false-cut-in rate a system may run at.
+# The operating-point budget: the highest false-cut-in rate a model may run at.
 MAX_FALSE_CUT_IN_RATE = 0.10
 
 
@@ -56,16 +57,6 @@ def evaluation_conversation(conversation: ConversationAnnotations, duration_s: f
 
 
 @dataclass(frozen=True)
-class SystemSweep:
-    """A system family over its knob: `build(value)` is the system at that knob setting."""
-
-    name: str
-    knob_name: str
-    values: Sequence[float]
-    build: Callable[[float], DetectorSystem]
-
-
-@dataclass(frozen=True)
 class Scores:
     """Aggregate EOT scores at one knob setting. Latencies are detection latencies in ms."""
 
@@ -89,9 +80,9 @@ class Scores:
         )  # fmt: skip
 
 
-def score_conversation(system: DetectorSystem, conversation: EvaluationConversation) -> TaskScore:
+def score_conversation(model: Model, conversation: EvaluationConversation) -> TaskScore:
     """Score one conversation's firings, both speakers, with TurnBench's validation and scorer."""
-    firings = {side.speaker: system.fire(side) for side in conversation.sides}
+    firings = {side.speaker: model.fire(side) for side in conversation.sides}
     prediction = ConversationPrediction(
         conversation_id=conversation.info.conversation_id,
         speaker_1=SpeakerEvents(eot=firings[1], interruption=[]),
@@ -104,9 +95,8 @@ def score_conversation(system: DetectorSystem, conversation: EvaluationConversat
 
 @dataclass(frozen=True)
 class KnobScores:
-    """Per-conversation scores of one system family at every knob setting."""
+    """Per-conversation scores of one model at every knob setting, in knob order."""
 
-    sweep: SystemSweep
     by_knob: dict[float, dict[str, TaskScore]]
 
     def total(self, knob: float, conversation_ids: Iterable[str]) -> TaskScore:
@@ -117,15 +107,15 @@ class KnobScores:
 
     def curve(self, conversation_ids: Sequence[str]) -> list[Scores]:
         """The sweep over these conversations: scores at every knob setting, in knob order."""
-        return [Scores.of(knob, self.total(knob, conversation_ids)) for knob in self.sweep.values]
+        return [Scores.of(knob, self.total(knob, conversation_ids)) for knob in self.by_knob]
 
 
-def score_knobs(sweep: SystemSweep, conversations: Sequence[EvaluationConversation]) -> KnobScores:
+def score_knobs(model: RegisteredModel, conversations: Sequence[EvaluationConversation]) -> KnobScores:
     by_knob = {}
-    for value in sweep.values:
-        system = sweep.build(value)
-        by_knob[value] = {c.info.conversation_id: score_conversation(system, c) for c in conversations}
-    return KnobScores(sweep, by_knob)
+    for value in model.knob_values:
+        built = model.build(value)
+        by_knob[value] = {c.info.conversation_id: score_conversation(built, c) for c in conversations}
+    return KnobScores(by_knob)
 
 
 def operating_point(curve: Sequence[Scores], max_false_cut_in_rate: float = MAX_FALSE_CUT_IN_RATE) -> Scores:

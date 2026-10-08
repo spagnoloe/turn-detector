@@ -1,6 +1,6 @@
 """Causality: changing audio, text or segments after time t never changes firings before t.
 
-Every detector system goes in SYSTEMS. The check builds random synthetic sides, rewrites
+Every model goes in MODELS_UNDER_TEST. The check builds random synthetic sides, rewrites
 everything after a cut time t (the user's audio, segments still in progress at t and their
 text, segments starting after t, and the same for the other speaker's turns), and requires the
 firings before t to be identical.
@@ -12,10 +12,10 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 
-from turn_detector.baseline import SilenceTimeout
-from turn_detector.detector import Audio, DetectorSystem, Segment, SpeakerSide
+from turn_detector.model import Audio, Model, Segment, SpeakerSide
+from turn_detector.models.silence_timeout import SilenceTimeout
 
-SYSTEMS: list[DetectorSystem] = [SilenceTimeout(timeout_ms=200), SilenceTimeout(timeout_ms=1000)]
+MODELS_UNDER_TEST: list[Model] = [SilenceTimeout(timeout_ms=200), SilenceTimeout(timeout_ms=1000)]
 
 DURATION_S = 30.0
 SAMPLE_RATE = 16_000
@@ -76,25 +76,25 @@ def perturb_after(side: SpeakerSide, t: float, rng: random.Random) -> SpeakerSid
     )
 
 
-def firings_before(system: DetectorSystem, side: SpeakerSide, t: float) -> list[float]:
-    return [firing for firing in system.fire(side) if firing < t]
+def firings_before(model: Model, side: SpeakerSide, t: float) -> list[float]:
+    return [firing for firing in model.fire(side) if firing < t]
 
 
-def assert_causal(system: DetectorSystem, *, sides: int = 30, cuts_per_side: int = 10, seed: int = 0) -> None:
+def assert_causal(model: Model, *, sides: int = 30, cuts_per_side: int = 10, seed: int = 0) -> None:
     rng = random.Random(seed)
     for _ in range(sides):
         side = random_side(rng)
         for _ in range(cuts_per_side):
             t = rng.uniform(0.0, DURATION_S)
             perturbed = perturb_after(side, t, rng)
-            assert firings_before(system, perturbed, t) == firings_before(system, side, t), (
-                f"{system.name}: firings before t={t:.3f} changed when the future changed"
+            assert firings_before(model, perturbed, t) == firings_before(model, side, t), (
+                f"{model.name}: firings before t={t:.3f} changed when the future changed"
             )
 
 
-@pytest.mark.parametrize("system", SYSTEMS, ids=lambda system: f"{system.name} {system}")
-def test_firings_never_depend_on_the_future(system: DetectorSystem):
-    assert_causal(system)
+@pytest.mark.parametrize("model", MODELS_UNDER_TEST, ids=lambda model: f"{model.name} {model}")
+def test_firings_never_depend_on_the_future(model: Model):
+    assert_causal(model)
 
 
 @dataclass(frozen=True)
@@ -108,6 +108,6 @@ class PeeksAhead:
         return [s.end + 0.2 for s, next_start in zip(side.segments, starts) if next_start - s.end > 1.0]
 
 
-def test_the_check_catches_a_system_that_peeks_ahead():
+def test_the_check_catches_a_model_that_peeks_ahead():
     with pytest.raises(AssertionError, match="changed when the future changed"):
         assert_causal(PeeksAhead())

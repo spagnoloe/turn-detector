@@ -1,7 +1,7 @@
-"""The silence-timeout baseline, through the detector-system interface."""
+"""The silence-timeout model, through the model interface."""
 
-from turn_detector.baseline import SilenceTimeout
-from turn_detector.detector import Segment, SpeakerSide
+from turn_detector.model import Segment, SpeakerSide
+from turn_detector.models.silence_timeout import SilenceTimeout
 
 
 def side(*segments: tuple[float, float], duration_s: float = 20.0) -> SpeakerSide:

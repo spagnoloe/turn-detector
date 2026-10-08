@@ -1,5 +1,5 @@
 {
-  "name": "silence timeout",
+  "model": "silence timeout",
   "knob_name": "N (ms)",
   "folds": [
     {

@@ -1,8 +1,8 @@
-"""The silence-timeout baseline: what plain voice-activity detection achieves."""
+"""The silence-timeout model, the baseline: what plain voice-activity detection achieves."""
 
 from dataclasses import dataclass
 
-from turn_detector.detector import SpeakerSide
+from turn_detector.model import SpeakerSide
 
 
 @dataclass(frozen=True)
