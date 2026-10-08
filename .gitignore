@@ -220,7 +220,8 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Confidential assignment brief (kept local only)
-docs/assignment/
+# No trailing slash, so worktree symlinks are ignored too
+/docs/assignment
 # Exported planning chats (kept local only)
 docs/chats/
 
@@ -228,5 +229,6 @@ docs/chats/
 .DS_Store
 
 # Local data and trained artifacts
-data/
-artifacts/
+# No trailing slash, so worktree symlinks are ignored too
+/data
+/artifacts
