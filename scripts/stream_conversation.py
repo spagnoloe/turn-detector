@@ -3,7 +3,8 @@
 Each speaker in turn is the user. Every 50 ms while they are silent, the script sends what the
 orchestrator would: the last 1 s of their audio (16 kHz PCM), the transcript so far, the other
 speaker's previous turn and the silence duration; it applies the firing rule to each response
-(`turn_detector.streaming`). It prints every firing with the pause it ended and the request
+(`turn_detector.streaming`). Requests with audio are answered by the audio-only model; with
+`--no-audio` they carry text only and the text-only model answers. It prints every firing with the pause it ended and the request
 latency the client saw. The held-out conversations are scored only once, at the end, so no gold
 events or scores are shown here.
 
@@ -33,16 +34,18 @@ def main() -> None:
     args = parser.parse_args()
 
     [conversation] = load_conversations([args.conversation])
-    request_latencies_ms = []
+    request_latencies_ms, answered_by = [], set()
     with httpx2.Client(base_url=args.url, timeout=5.0) as client:
 
         def predict(payload: dict) -> dict:
             start = time.perf_counter()
             response = client.post("/predict", json=payload).raise_for_status()
             request_latencies_ms.append((time.perf_counter() - start) * 1000)
+            answered_by.add(response.json()["model"])
             return response.json()
 
-        print(f"serving {client.get('/health').raise_for_status().json()['model']} at {args.url}")
+        models = client.get("/health").raise_for_status().json()["models"]
+        print(f"serving {', '.join(models)} at {args.url}")
         print(f"conversation {args.conversation} ({conversation.info.conversation_type}, {conversation.duration_s:.0f} s)")
         for side in conversation.sides:
             audio = None if args.no_audio else pcm_16k(load_audio(args.conversation, side.speaker))
@@ -55,7 +58,8 @@ def main() -> None:
                 )
 
     p50, p95, p99 = np.percentile(request_latencies_ms, [50, 95, 99])
-    print(f"\n{len(request_latencies_ms)} requests, request latency (client-side) p50 {p50:.1f} / p95 {p95:.1f} / p99 {p99:.1f} ms")
+    print(f"\nanswered by {', '.join(sorted(answered_by))}")
+    print(f"{len(request_latencies_ms)} requests, request latency (client-side) p50 {p50:.1f} / p95 {p95:.1f} / p99 {p99:.1f} ms")
 
 
 if __name__ == "__main__":

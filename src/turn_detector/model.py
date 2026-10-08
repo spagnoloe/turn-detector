@@ -10,6 +10,8 @@ must be causal: a firing at time t may depend on nothing after t
 (tests/test_causality.py checks every model).
 """
 
+import math
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -86,3 +88,16 @@ def next_speech_start(side: SpeakerSide, end: float) -> float:
     """When the user is next heard after a segment end at `end`: the earliest start of their
     speech still going on after `end`, or infinity. A firing at t is in silence iff t <= this."""
     return min((segment.start for segment in side.segments if segment.end > end), default=float("inf"))
+
+
+# A live detector is asked every 50 ms, on a grid counted from the start of the call.
+STEP_S = 0.05
+EPSILON_S = 1e-6  # steps are on a float grid; compare times with this much slack
+
+
+def steps(start: float, until: float) -> Iterator[float]:
+    """The 50 ms grid points from `start` to `until`, both included."""
+    k = math.ceil(start / STEP_S - EPSILON_S)
+    while (t := k / round(1 / STEP_S)) <= until + EPSILON_S:
+        yield t
+        k += 1

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from turn_detector.evaluation import EvaluationConversation
 from turn_detector.model import Fitted, Model, Setting
-from turn_detector.models import text_only
+from turn_detector.models import audio_only, text_only
 from turn_detector.models.baseline import Baseline
 
 
@@ -68,6 +68,15 @@ MODELS = {
             settings=[(i / 100, float(ms)) for i in range(101) for ms in range(200, 3001, 50)],
             fit=text_only.fit,
             colour="#e07b39",
+        ),
+        RegisteredModel(
+            name=audio_only.NAME,
+            knob_names=("P_audio threshold",),
+            # Finer than the text-only model's: the strongly regularised head's P_audio is bunched
+            # near its threshold, where a step of 0.01 moves the false-cut-in rate by several points.
+            settings=[(i / 1000,) for i in range(1001)],
+            fit=audio_only.fit,
+            colour="#3a9e6a",
         ),
     ]
 }

@@ -43,7 +43,7 @@ This prints counts per split and per speaker. The dev-set totals (1904 EOTs, 106
 
 ## Models
 
-A **model** is one complete way of deciding when the user's turn has ended: a plain rule (the baseline) or a trained classifier plus a firing rule. Four are planned: the baseline, text-only, audio-only and combined; the first two exist.
+A **model** is one complete way of deciding when the user's turn has ended: a plain rule (the baseline) or a trained classifier plus a firing rule. Four are planned: the baseline, text-only, audio-only and combined; the first three exist.
 
 Code is split into what every model shares and what belongs to one model:
 
@@ -55,10 +55,13 @@ Code is split into what every model shares and what belongs to one model:
 | `turn_detector.models` | One module per model, plus `MODELS`, the registry of each model's knobs, swept settings and figure colour. |
 | `turn_detector.models.baseline` | The baseline, a silence timeout: fires at segment end + N ms if the user hasn't resumed by then. This is what plain voice-activity detection achieves. |
 | `turn_detector.models.text_only` | The text-only model: at each segment end, a frozen `all-MiniLM-L6-v2` encoder with a logistic-regression head reads the other speaker's previous turn and the user's turn so far (the last 64 tokens) and outputs P_text(EOT). It fires at segment end + 200 ms (the assumed ASR lag) if P_text ≥ the threshold, otherwise at segment end + a silence backstop, either only if the user is still silent. The threshold and the backstop are its two knobs, tuned together. With the threshold above every P_text it is the baseline, with the backstop as its timeout, so tuning both never does worse than the baseline on the data they are tuned on. |
+| `turn_detector.models.audio_only` | The audio-only model: every 50 ms while the user is silent, a frozen `wav2vec2-base` encoder hears the user's last 1 s of audio (resampled from 48 kHz to 16 kHz), and a logistic-regression head reads three features: the mean of the window's frames, the mean of its last speech frames (the last 200 ms before the pause) and the silence duration so far. It outputs P_audio(EOT) and fires on the rising edge where it first reaches the threshold, at most once per pause. It stops listening 3 s into a pause, since TurnBench never counts a later firing as a hit. The threshold is its one knob. |
 
 The segments are TurnBench's 2-of-3 consensus segments, so their ends are the pauses every model sees: a perfect pause detector in place of a real VAD. Speech without annotator agreement is missing from the timeline, and each segment's transcript comes from the closest-matching annotator segment (the annotators' texts agree 99% of the time).
 
 Transcripts stand in for a streaming ASR. A segment's text is readable only once the segment has ended. Before the text model reads them, bracketed annotation tags such as `[laughs]` are stripped, since an ASR never outputs them, and fillers such as "um" and "uh" are kept, since an ASR usually does.
+
+The audio-only model hears real audio, but its pauses and silence duration come from the same consensus segments. It is trained on samples every 50 ms through each pause with a gold label, up to 1 s into it (EOT or mid-turn pause), plus one sample per second of speech (not EOT). Its window is resampled on its own, so no audio after t can reach the window used at t.
 
 `tests/test_causality.py` checks that every model in its `MODELS_UNDER_TEST` list is causal: rewriting the audio, text or segments after a time t never changes the firings before t.
 
@@ -67,9 +70,10 @@ Transcripts stand in for a streaming ASR. A segment's text is readable only once
 ```bash
 uv run python scripts/evaluate.py baseline
 uv run python scripts/evaluate.py text-only
+uv run python scripts/evaluate.py audio-only
 ```
 
-This fits the model to the development conversations, sweeps its settings, one value per knob (for the baseline, the silence timeout N from 0 to 3000 ms in steps of 50; for the text-only model, every pair of a P_text threshold from 0 to 1 in steps of 0.01 and a backstop from 200 to 3000 ms in steps of 50), and writes:
+This fits the model to the development conversations, sweeps its settings, one value per knob (for the baseline, the silence timeout N from 0 to 3000 ms in steps of 50; for the text-only model, every pair of a P_text threshold from 0 to 1 in steps of 0.01 and a backstop from 200 to 3000 ms in steps of 50; for the audio-only model, the P_audio threshold from 0 to 1 in steps of 0.01), and writes:
 
 - `results/models/<model>/`, that model only:
   - `sweep.csv`: recall, **false-cut-in rate** and p10/p50/p90 **detection latency** at every setting, on all development conversations;
@@ -79,7 +83,9 @@ This fits the model to the development conversations, sweeps its settings, one v
   - `results.md`: recall and detection latency at a false-cut-in rate of 0.10 or less, one row per model;
   - `detection_latency_vs_false_cut_in_rate.png` (main figure) and `recall_vs_false_cut_in_rate.png`: one line per model.
 
-- `artifacts/<model>/`, for a trained model: the final model at the chosen setting, trained on all development conversations, for serving. For the text-only model this is `text-only.json` (the head, its threshold and backstop, and the encoder's name), loaded back with `turn_detector.models.text_only.load_text_only`.
+- `artifacts/<model>/`, for a trained model: the final model at the chosen setting, trained on all development conversations, for serving. For the text-only model this is `text-only.json` (the head, its threshold and backstop, and the encoder's name), loaded back with `turn_detector.models.text_only.load_text_only`; for the audio-only model, `audio-only.json` (the head, its threshold, and the encoder's name and layer), loaded back with `turn_detector.models.audio_only.load_audio_only`.
+
+The audio-only model's encoder features are cached in the git-ignored `data/cache/audio-only/`, at every 50 ms step the evaluation scores and every training sample. The first run extracts them (about 100,000 windows, roughly 15 minutes on the laptop's GPU); later runs train the heads and sweep the threshold in seconds.
 
 The script also prints the comparison table.
 
@@ -91,15 +97,15 @@ Scores come from TurnBench's own code: firings are checked with its submission v
 
 ## Serving
 
-`turn_detector.serving` is a stateless FastAPI service around the trained text-only model ([ADR 0001](docs/adr/0001-asr-outside-the-detector.md): ASR runs upstream). The model is loaded once, at startup, from `artifacts/text-only/`, so run the text-only evaluation first.
+`turn_detector.serving` is a stateless FastAPI service around the trained text-only and audio-only models ([ADR 0001](docs/adr/0001-asr-outside-the-detector.md): ASR runs upstream). The models are loaded once, at startup, from `artifacts/text-only/` and `artifacts/audio-only/`, so run both evaluations first.
 
 - `POST /predict` takes `{audio, transcript, previous_turn, silence_ms}`, all optional, and returns `{p_eot, threshold, backstop_ms, model}`.
   - `audio` is base64 of the user's last 1 s as 16 kHz mono 16-bit little-endian PCM: exactly 32,000 bytes, or the request is rejected with 422.
   - `transcript` is the user's turn so far, as the ASR has finalised it, and `previous_turn` is the agent's last turn.
-  - The text-only model reads only the text. `audio` and `silence_ms` are validated but not used yet.
-- `GET /health` returns `{status, model}`.
+  - A request with `audio` is answered by the audio-only model, which also hears `silence_ms` (so it is required with audio, or the request is rejected with 422). Any other request is answered by the text-only model, which reads only the text. `model` in the response says which answered; `backstop_ms` is null for the audio-only model.
+- `GET /health` returns `{status, models}`.
 
-The caller keeps the rolling audio buffer and applies the firing rule itself. It calls `/predict` every 50 ms while the user is silent. It fires once the ASR's text has arrived (200 ms into the pause) if `p_eot` ≥ `threshold`, or once the silence reaches `backstop_ms`, at most once per pause. `turn_detector.streaming` is that caller. `tests/test_streaming.py` checks that streaming through the API fires where the evaluated model does, rounded up to the next 50 ms step.
+The caller keeps the rolling audio buffer and applies the firing rule itself. It calls `/predict` every 50 ms while the user is silent, up to 3 s into the pause. With the audio-only model it fires as soon as `p_eot` ≥ `threshold`. With the text-only model it fires once the ASR's text has arrived (200 ms into the pause) if `p_eot` ≥ `threshold`, or once the silence reaches `backstop_ms`. Either way it fires at most once per pause. `turn_detector.streaming` is that caller. `tests/test_streaming.py` checks that streaming through the API fires where each evaluated model does (for the text-only model, rounded up to the next 50 ms step).
 
 ```bash
 uv run uvicorn turn_detector.serving:app      # http://localhost:8000/docs
@@ -107,10 +113,11 @@ uv run uvicorn turn_detector.serving:app      # http://localhost:8000/docs
 
 ### Docker
 
-The CPU image bakes in the dependencies (torch from PyTorch's CPU index on Linux, so without CUDA), the trained head and the encoder's weights. It runs with `HF_HUB_OFFLINE=1`, so it needs no network access. The server is uvicorn with `WEB_CONCURRENCY` worker processes (default 4), each using `OMP_NUM_THREADS` threads (default 1).
+The CPU image bakes in the dependencies (torch from PyTorch's CPU index on Linux, so without CUDA), the trained heads and both encoders' weights. It runs with `HF_HUB_OFFLINE=1`, so it needs no network access. The server is uvicorn with `WEB_CONCURRENCY` worker processes (default 4), each using `OMP_NUM_THREADS` threads (default 1).
 
 ```bash
-uv run python scripts/evaluate.py text-only   # writes artifacts/text-only/
+uv run python scripts/evaluate.py text-only    # writes artifacts/text-only/
+uv run python scripts/evaluate.py audio-only   # writes artifacts/audio-only/
 docker build -t turn-detector .
 docker run --rm -p 8000:8000 turn-detector
 ```
@@ -119,12 +126,13 @@ docker run --rm -p 8000:8000 turn-detector
 
 ```bash
 uv run python scripts/stream_conversation.py   # streams a held-out conversation, prints the firings
-uv run python scripts/stress_test.py --setup "<machine, CPUs, workers>"
+uv run python scripts/stress_test.py --setup "<machine, CPUs, workers>"              # audio requests
+uv run python scripts/stress_test.py --setup "<machine, CPUs, workers>" --no-audio   # text requests
 ```
 
-`stream_conversation.py` streams both speakers of a held-out conversation through the API in 50 ms steps, sending real audio and transcripts. It prints each firing (when, how far into the pause, confident or backstop, `p_eot`) and the request latency the client saw. It shows no gold events or scores, since held-out conversations are scored only once, at the end.
+`stream_conversation.py` streams both speakers of a held-out conversation through the API in 50 ms steps, sending real audio and transcripts (text only with `--no-audio`). It prints each firing (when, how far into the pause, confident or backstop, `p_eot`) and the request latency the client saw. It shows no gold events or scores, since held-out conversations are scored only once, at the end.
 
-`stress_test.py` sends real requests sampled from that stream with [Locust](https://locust.io), at several concurrency levels, to whichever model the server is serving. It writes request latency p50/p95/p99 and throughput per level to that model's `results/models/<model>/stress_test.{csv,md}`. The baseline has none: it is a silence timeout the caller applies itself, with no request to make. The findings are in [`docs/solution.md`](docs/solution.md#serving-and-request-latency).
+`stress_test.py` sends real requests sampled from that stream with [Locust](https://locust.io), at several concurrency levels: with audio, so the audio-only model answers, or with `--no-audio`, so the text-only model does. It writes request latency p50/p95/p99 and throughput per level to the answering model's `results/models/<model>/stress_test.{csv,md}`. The baseline has none: it is a silence timeout the caller applies itself, with no request to make. The findings are in [`docs/solution.md`](docs/solution.md#serving-and-request-latency).
 
 ## Tests
 
