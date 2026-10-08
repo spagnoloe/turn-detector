@@ -102,11 +102,13 @@ class Encoder(Protocol):
 class SentenceEncoder:
     """A frozen sentence-transformers encoder reading at most `max_tokens` tokens, the last ones.
 
-    Embeddings are remembered, so re-reading the same text (every threshold of a sweep) is free.
+    Embeddings are remembered, so re-reading the same text (every threshold of a sweep) is free;
+    a served encoder (`remember=False`) remembers nothing, since its texts are endless.
     """
 
     name: str = ENCODER
     max_tokens: int = MAX_TOKENS
+    remember: bool = True
     cache: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
 
     @cached_property
@@ -119,6 +121,8 @@ class SentenceEncoder:
         return transformer
 
     def __call__(self, texts: Sequence[str]) -> np.ndarray:
+        if not self.remember:
+            return self.transformer.encode(list(texts), batch_size=64, convert_to_numpy=True)
         new = list(dict.fromkeys(text for text in texts if text not in self.cache))
         if new:
             self.cache.update(zip(new, self.transformer.encode(new, batch_size=64, convert_to_numpy=True)))
@@ -232,9 +236,10 @@ def save_text_only(model: TextOnly, path: Path = ARTIFACT_PATH) -> Path:
 
 
 def load_text_only(path: Path = ARTIFACT_PATH, encoder: Encoder | None = None) -> TextOnly:
-    """The saved model, with its encoder loaded (or `encoder`, which must be the one it was trained on)."""
+    """The saved model, with its encoder loaded (or `encoder`, which must be the one it was trained on).
+    It is loaded for serving, so the encoder remembers nothing."""
     stored = json.loads(path.read_text())
-    encoder = encoder or SentenceEncoder(stored["encoder"], stored["max_tokens"])
+    encoder = encoder or SentenceEncoder(stored["encoder"], stored["max_tokens"], remember=False)
     if encoder.name != stored["encoder"]:
         raise ValueError(f"the head was trained on encoder {stored['encoder']!r}, not {encoder.name!r}")
     head = LogisticHead(np.array(stored["weights"]), stored["bias"])

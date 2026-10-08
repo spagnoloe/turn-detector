@@ -1,12 +1,16 @@
 """Where the TurnBench dev set lives on disk, how it gets there, and how it is read back."""
 
+import io
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import pyarrow.parquet as pq
+import soundfile
 from huggingface_hub import snapshot_download
 from turnbench.data import ANNOTATORS, DEV_DATASET, DEV_REVISION, SPEAKERS, Annotation
+
+from turn_detector.model import Audio
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "data"
@@ -79,3 +83,14 @@ def iter_annotations(data_dir: Path = DEV_DATA_DIR) -> Iterator[ConversationAnno
                 )
             )
     yield from sorted(conversations, key=lambda conversation: int(conversation.conversation_id))
+
+
+def load_audio(conversation_id: str, speaker: int, data_dir: Path = DEV_DATA_DIR) -> Audio:
+    """One speaker's channel of one conversation, decoded to float samples in [-1, 1]."""
+    column = f"speaker_{speaker}_audio"
+    for file in parquet_files(data_dir):
+        table = pq.read_table(file, columns=[column], filters=[("conversation_id", "=", conversation_id)])
+        if table.num_rows:
+            samples, sample_rate = soundfile.read(io.BytesIO(table[column][0]["bytes"].as_py()), dtype="float32")
+            return Audio(samples if samples.ndim == 1 else samples.mean(axis=1), sample_rate)
+    raise KeyError(f"no conversation {conversation_id!r} under {data_dir}")

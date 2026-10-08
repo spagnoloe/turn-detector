@@ -89,6 +89,43 @@ The setting is chosen by cross-validation that leaves one speaker group out per 
 
 Scores come from TurnBench's own code: firings are checked with its submission validators and scored with its `score_task` against its gold, exactly as `turnbench.score` does, on the EOT task only. Each conversation is scored once per setting, and folds are sums of those scores. Two departures: the sweep covers a subset of conversations, where `turnbench.score` insists on the whole dev set, and ties between settings with equal recall go to the lower median detection latency, where `turnbench.sweep.operating_point` leaves them unbroken.
 
+## Serving
+
+`turn_detector.serving` is a stateless FastAPI service around the trained text-only model ([ADR 0001](docs/adr/0001-asr-outside-the-detector.md): ASR runs upstream). The model is loaded once, at startup, from `artifacts/text-only/`, so run the text-only evaluation first.
+
+- `POST /predict` takes `{audio, transcript, previous_turn, silence_ms}`, all optional, and returns `{p_eot, threshold, backstop_ms, model}`.
+  - `audio` is base64 of the user's last 1 s as 16 kHz mono 16-bit little-endian PCM: exactly 32,000 bytes, or the request is rejected with 422.
+  - `transcript` is the user's turn so far, as the ASR has finalised it, and `previous_turn` is the agent's last turn.
+  - The text-only model reads only the text. `audio` and `silence_ms` are validated but not used yet.
+- `GET /health` returns `{status, model}`.
+
+The caller keeps the rolling audio buffer and applies the firing rule itself. It calls `/predict` every 50 ms while the user is silent. It fires once the ASR's text has arrived (200 ms into the pause) if `p_eot` ≥ `threshold`, or once the silence reaches `backstop_ms`, at most once per pause. `turn_detector.streaming` is that caller. `tests/test_streaming.py` checks that streaming through the API fires where the evaluated model does, rounded up to the next 50 ms step.
+
+```bash
+uv run uvicorn turn_detector.serving:app      # http://localhost:8000/docs
+```
+
+### Docker
+
+The CPU image bakes in the dependencies (torch from PyTorch's CPU index on Linux, so without CUDA), the trained head and the encoder's weights. It runs with `HF_HUB_OFFLINE=1`, so it needs no network access. The server is uvicorn with `WEB_CONCURRENCY` worker processes (default 4), each using `OMP_NUM_THREADS` threads (default 1).
+
+```bash
+uv run python scripts/evaluate.py text-only   # writes artifacts/text-only/
+docker build -t turn-detector .
+docker run --rm -p 8000:8000 turn-detector
+```
+
+### Demo and stress test
+
+```bash
+uv run python scripts/stream_conversation.py   # streams a held-out conversation, prints the firings
+uv run python scripts/stress_test.py --setup "<machine, CPUs, workers>"
+```
+
+`stream_conversation.py` streams both speakers of a held-out conversation through the API in 50 ms steps, sending real audio and transcripts. It prints each firing (when, how far into the pause, confident or backstop, `p_eot`) and the request latency the client saw. It shows no gold events or scores, since held-out conversations are scored only once, at the end.
+
+`stress_test.py` sends real requests sampled from that stream with [Locust](https://locust.io), at several concurrency levels, to whichever model the server is serving. It writes request latency p50/p95/p99 and throughput per level to that model's `results/models/<model>/stress_test.{csv,md}`. The baseline has none: it is a silence timeout the caller applies itself, with no request to make. The findings are in [`docs/solution.md`](docs/solution.md#serving-and-request-latency).
+
 ## Tests
 
 ```bash
