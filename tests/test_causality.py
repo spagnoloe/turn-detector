@@ -3,10 +3,13 @@
 Every model goes in MODELS_UNDER_TEST. The check builds random synthetic sides, rewrites
 everything after a cut time t (the user's audio, segments still in progress at t and their
 text, segments starting after t, and the same for the other speaker's turns), and requires the
-firings before t to be identical.
+firings before t to be identical. Cuts fall at random times and just after each of the model's
+firings, so a model reading even slightly ahead of its firing is caught.
 """
 
 import random
+import zlib
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -14,8 +17,23 @@ import pytest
 
 from turn_detector.model import Audio, Model, Segment, SpeakerSide
 from turn_detector.models.baseline import Baseline
+from turn_detector.models.text_only import TextContext, TextOnly
 
-MODELS_UNDER_TEST: list[Model] = [Baseline(timeout_ms=200), Baseline(timeout_ms=1000)]
+
+@dataclass(frozen=True)
+class HashClassifier:
+    """A stand-in for the trained classifier whose P(EOT) changes with any change to its input."""
+
+    def p_eot(self, contexts: Sequence[TextContext]) -> list[float]:
+        return [zlib.crc32(repr(context).encode()) / 2**32 for context in contexts]
+
+
+MODELS_UNDER_TEST: list[Model] = [
+    Baseline(timeout_ms=200),
+    Baseline(timeout_ms=1000),
+    TextOnly(HashClassifier(), threshold=0.5, backstop_s=1.5),
+    TextOnly(HashClassifier(), threshold=0.3, backstop_s=0.4),
+]
 
 DURATION_S = 30.0
 SAMPLE_RATE = 16_000
@@ -81,11 +99,13 @@ def firings_before(model: Model, side: SpeakerSide, t: float) -> list[float]:
 
 
 def assert_causal(model: Model, *, sides: int = 30, cuts_per_side: int = 10, seed: int = 0) -> None:
+    """Cut at random times, and just after each firing, where reading slightly ahead shows up."""
     rng = random.Random(seed)
     for _ in range(sides):
         side = random_side(rng)
-        for _ in range(cuts_per_side):
-            t = rng.uniform(0.0, DURATION_S)
+        random_cuts = [rng.uniform(0.0, DURATION_S) for _ in range(cuts_per_side)]
+        cuts_after_firings = [min(firing + rng.uniform(0.001, 0.5), DURATION_S) for firing in model.fire(side)]
+        for t in random_cuts + cuts_after_firings:
             perturbed = perturb_after(side, t, rng)
             assert firings_before(model, perturbed, t) == firings_before(model, side, t), (
                 f"{model.name}: firings before t={t:.3f} changed when the future changed"

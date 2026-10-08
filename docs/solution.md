@@ -111,6 +111,7 @@ Annotators use the TurnBench protocol (three annotators, 2-of-3 agreement within
 - The whole dataset is about 7 h from 38 conversations and 26 actors, and only the ~26 development conversations are trained on (ADR 0003). Held-out results rest on 12 conversations, so their confidence intervals are wide.
 - The speakers are actors doing role-play, with clean wideband audio. Production callers are on 8 kHz phone lines, with noise and real stakes.
 - Pauses come from annotation segment ends (a perfect VAD), and text comes from human transcripts (a perfect ASR). Real VAD and ASR errors will make production results worse than ours.
+- To make the transcripts look more like ASR output, the text model strips bracketed annotation tags such as `[laughs]` or `[unintelligible]`, which an ASR never outputs. It keeps fillers such as "um", "uh" and "hm", which an ASR usually does output, including where an annotator bracketed them. Text is readable only once its whole segment has ended. Speech outside the 2-of-3 consensus segments (about 7% of annotator segments) contributes no words.
 - Events without 2-of-3 annotator agreement are dropped. The most ambiguous pauses, which are where a detector fails, are missing from both training and evaluation.
 - English only. We trained on part of the dev set, so the scores are not official TurnBench dev scores and are not directly comparable with published baselines.
 

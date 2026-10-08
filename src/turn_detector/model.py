@@ -5,11 +5,13 @@ has ended and the agent should respond. It sees what a live detector would have:
 audio channel, the user's speech segments with their transcripts, and the other speaker's turns.
 Each model owns its firing rule. Firings, not probabilities, are what gets scored; a model built
 on a classifier's P(EOT) (the served detector's output, ADR 0001) turns it into firings with its
-threshold. Models must be causal: a firing at time t may depend on nothing after t
+threshold. A trained model is fitted on the development conversations first (`Fitted`). Models
+must be causal: a firing at time t may depend on nothing after t
 (tests/test_causality.py checks every model).
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -60,3 +62,27 @@ class Model(Protocol):
     def fire(self, side: SpeakerSide) -> list[float]:
         """Firing times in seconds, strictly increasing and within the conversation."""
         ...
+
+
+# One value per knob of a model, in the order its registration names them: (N,) for the
+# baseline's timeout, (threshold, backstop) for the text-only model.
+type Setting = tuple[float, ...]
+
+
+class Fitted(Protocol):
+    """A model fitted to the development conversations, ready to build at any setting."""
+
+    def build(self, setting: Setting) -> Model:
+        """The model at this setting, as the evaluation scores it. A trained model's classifier
+        never saw the speaker group of the conversation it is scoring."""
+        ...
+
+    def save(self, setting: Setting) -> list[Path]:
+        """Save the final model at the chosen setting for serving; a plain rule saves nothing."""
+        ...
+
+
+def next_speech_start(side: SpeakerSide, end: float) -> float:
+    """When the user is next heard after a segment end at `end`: the earliest start of their
+    speech still going on after `end`, or infinity. A firing at t is in silence iff t <= this."""
+    return min((segment.start for segment in side.segments if segment.end > end), default=float("inf"))

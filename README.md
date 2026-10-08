@@ -43,7 +43,7 @@ This prints counts per split and per speaker. The dev-set totals (1904 EOTs, 106
 
 ## Models
 
-A **model** is one complete way of deciding when the user's turn has ended: a plain rule (the baseline) or a trained classifier plus a firing rule. Four are planned: the baseline, text-only, audio-only and combined.
+A **model** is one complete way of deciding when the user's turn has ended: a plain rule (the baseline) or a trained classifier plus a firing rule. Four are planned: the baseline, text-only, audio-only and combined; the first two exist.
 
 Code is split into what every model shares and what belongs to one model:
 
@@ -51,11 +51,14 @@ Code is split into what every model shares and what belongs to one model:
 |---|---|
 | `turn_detector.model` | Shared: the interface every model implements. A model takes one speaker's side of a conversation (that speaker's audio, their speech segments with transcripts, and the other speaker's turns) and returns its **firing** times. |
 | `turn_detector.timeline` | Shared: builds each speaker's side from the annotations. |
-| `turn_detector.evaluation`, `turn_detector.report` | Shared: scoring, knob sweep, cross-validation, results table and figures. |
-| `turn_detector.models` | One module per model, plus `MODELS`, the registry of each model's knob, swept values and figure colour. |
+| `turn_detector.evaluation`, `turn_detector.report` | Shared: scoring, the sweep over settings, cross-validation, results table and figures. |
+| `turn_detector.models` | One module per model, plus `MODELS`, the registry of each model's knobs, swept settings and figure colour. |
 | `turn_detector.models.baseline` | The baseline, a silence timeout: fires at segment end + N ms if the user hasn't resumed by then. This is what plain voice-activity detection achieves. |
+| `turn_detector.models.text_only` | The text-only model: at each segment end, a frozen `all-MiniLM-L6-v2` encoder with a logistic-regression head reads the other speaker's previous turn and the user's turn so far (the last 64 tokens) and outputs P_text(EOT). It fires at segment end + 200 ms (the assumed ASR lag) if P_text ≥ the threshold, otherwise at segment end + a silence backstop, either only if the user is still silent. The threshold and the backstop are its two knobs, tuned together. With the threshold above every P_text it is the baseline, with the backstop as its timeout, so tuning both never does worse than the baseline on the data they are tuned on. |
 
 The segments are TurnBench's 2-of-3 consensus segments, so their ends are the pauses every model sees: a perfect pause detector in place of a real VAD. Speech without annotator agreement is missing from the timeline, and each segment's transcript comes from the closest-matching annotator segment (the annotators' texts agree 99% of the time).
+
+Transcripts stand in for a streaming ASR. A segment's text is readable only once the segment has ended. Before the text model reads them, bracketed annotation tags such as `[laughs]` are stripped, since an ASR never outputs them, and fillers such as "um" and "uh" are kept, since an ASR usually does.
 
 `tests/test_causality.py` checks that every model in its `MODELS_UNDER_TEST` list is causal: rewriting the audio, text or segments after a time t never changes the firings before t.
 
@@ -63,23 +66,28 @@ The segments are TurnBench's 2-of-3 consensus segments, so their ends are the pa
 
 ```bash
 uv run python scripts/evaluate.py baseline
+uv run python scripts/evaluate.py text-only
 ```
 
-This sweeps the model's knob (for the baseline, the silence timeout N from 0 to 3000 ms) on the development conversations and writes:
+This fits the model to the development conversations, sweeps its settings, one value per knob (for the baseline, the silence timeout N from 0 to 3000 ms in steps of 50; for the text-only model, every pair of a P_text threshold from 0 to 1 in steps of 0.01 and a backstop from 200 to 3000 ms in steps of 50), and writes:
 
 - `results/models/<model>/`, that model only:
-  - `sweep.csv`: recall, **false-cut-in rate** and p10/p50/p90 **detection latency** at every knob setting, on all development conversations;
-  - `cross_validation.json`: the knob chosen per fold and the pooled cross-validated scores;
-  - `detection_latency_vs_false_cut_in_rate.png` and `recall_vs_false_cut_in_rate.png`: its sweep.
+  - `sweep.csv`: recall, **false-cut-in rate** and p10/p50/p90 **detection latency** at every setting, on all development conversations;
+  - `cross_validation.json`: the setting chosen per fold and the pooled cross-validated scores;
+  - `detection_latency_vs_false_cut_in_rate.png` and `recall_vs_false_cut_in_rate.png`: its sweep's frontier: at each false-cut-in rate, the best value any setting reaches.
 - `results/comparison/`, every model evaluated so far, rebuilt on each run:
   - `results.md`: recall and detection latency at a false-cut-in rate of 0.10 or less, one row per model;
   - `detection_latency_vs_false_cut_in_rate.png` (main figure) and `recall_vs_false_cut_in_rate.png`: one line per model.
 
+- `artifacts/<model>/`, for a trained model: the final model at the chosen setting, trained on all development conversations, for serving. For the text-only model this is `text-only.json` (the head, its threshold and backstop, and the encoder's name), loaded back with `turn_detector.models.text_only.load_text_only`.
+
 The script also prints the comparison table.
 
-The knob is chosen by cross-validation that leaves one speaker group out per fold (9 folds, [ADR 0003](docs/adr/0003-train-on-turnbench-dev.md)). Each fold picks the highest-recall setting within the 0.10 false-cut-in budget on the other folds (TurnBench's operating-point rule, ties to lower median latency), and the held-out folds' scores are pooled for the table. The figures show the sweep on all development conversations. The held-out conversations aren't scored.
+A trained model's classifier is cross-fitted: the head that scores a conversation is trained on the other speaker groups only, the same folds the setting's cross-validation uses, so no conversation is scored by a head that saw it. The setting for a fold is still chosen on the other folds' cross-fitted scores, whose heads did see that fold.
 
-Scores come from TurnBench's own code: firings are checked with its submission validators and scored with its `score_task` against its gold, exactly as `turnbench.score` does, on the EOT task only. Each conversation is scored once per knob setting, and folds are sums of those scores. Two departures: the sweep covers a subset of conversations, where `turnbench.score` insists on the whole dev set, and ties between knob settings with equal recall go to the lower median detection latency, where `turnbench.sweep.operating_point` leaves them unbroken.
+The setting is chosen by cross-validation that leaves one speaker group out per fold (9 folds, [ADR 0003](docs/adr/0003-train-on-turnbench-dev.md)). Each fold picks the highest-recall setting within the 0.10 false-cut-in budget on the other folds (TurnBench's operating-point rule, ties to lower median latency), and the held-out folds' scores are pooled for the table. The figures show the sweep on all development conversations. The held-out conversations aren't scored.
+
+Scores come from TurnBench's own code: firings are checked with its submission validators and scored with its `score_task` against its gold, exactly as `turnbench.score` does, on the EOT task only. Each conversation is scored once per setting, and folds are sums of those scores. Two departures: the sweep covers a subset of conversations, where `turnbench.score` insists on the whole dev set, and ties between settings with equal recall go to the lower median detection latency, where `turnbench.sweep.operating_point` leaves them unbroken.
 
 ## Tests
 

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from turn_detector.model import SpeakerSide
+from turn_detector.model import SpeakerSide, next_speech_start
 
 
 @dataclass(frozen=True)
@@ -16,11 +16,6 @@ class Baseline:
         firings = set()
         for segment in side.segments:
             firing = segment.end + self.timeout_ms / 1000
-            # Silent throughout [end, firing): no other speech overlaps that stretch.
-            resumed = any(
-                other is not segment and other.start < firing and other.end > segment.end
-                for other in side.segments
-            )
-            if not resumed and firing <= side.duration_s:
+            if firing <= min(next_speech_start(side, segment.end), side.duration_s):
                 firings.add(firing)
         return sorted(firings)
