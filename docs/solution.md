@@ -2,10 +2,6 @@
 
 Domain terms (EOT, mid-turn pause, firing, false cut-in, detection latency, request latency, …) are defined in [`CONTEXT.md`](../CONTEXT.md). Decisions are recorded in [`docs/adr/`](adr/).
 
-## Approach
-
-_To be completed with the held-out evaluation (#9)._
-
 ## Results
 
 _To be completed with the held-out evaluation (#9)._
@@ -30,7 +26,7 @@ For every call, the orchestrator logs one record per **pause** in the user's spe
 
 | What | How it is observed in production | Why it matters |
 |---|---|---|
-| **False cut-ins** | A **barge-in** (the user starts speaking while the agent is speaking) within about 1 s of the agent starting. A firing followed by the user resuming before the agent has spoken at all also counts. Reported as a rate per pause and per call. | The direct cost of the detector being too eager. Barge-ins later in the agent's reply are usually the user reacting to the content, so they are excluded. |
+| **False cut-ins** | A **barge-in** within about 1 s of the agent starting. A firing followed by the user resuming before the agent has spoken at all also counts. Reported as a proxy false-cut-in rate: the share of pauses the user resumed after (proxy mid-turn pauses) in which the detector fired. | The direct cost of the detector being too eager. Barge-ins later in the agent's reply are usually the user reacting to the content, so they are excluded. |
 | **Detection latency** | Firing time minus the VAD's speech end, as p50/p90/p99. The share of pauses that end on the silence backstop is tracked separately. | The direct cost of the detector being too cautious. A rising backstop share means the model has stopped being confident. |
 | **Missed EOTs** | Long agent waits: the user is silent past the backstop, or the user speaks again with a re-prompt ("hello?", repeating the question). | Catches EOTs that the model never fired on. |
 | **Request latency and errors** | p50/p95/p99 of `/predict` measured by the caller (not just server-side), plus timeouts, 4xx/5xx, and how often the caller fell back to a plain silence timeout. | The <100 ms target is a contract with the orchestrator. A late answer is as bad as no answer, because the next 50 ms request is already due. |
@@ -60,7 +56,7 @@ Barge-ins and long waits are imperfect labels. A user may barge in to correct a 
 
 ### Are we limited by public datasets?
 
-For training, the current model is: it learned from about 7 h of English role-play by 26 actors (ADR 0003), recorded in conditions unlike phone calls. Production is not limited the same way. At almost 1M calls a month, and assuming calls last a few minutes, that is tens of thousands of hours of in-domain audio a month, with real callers, real channels and real tasks. This is several hundred times the 104 h TurnBench training set. The bottleneck moves from **audio** to **labels**, and most labels can come from the calls themselves. This assumes customer contracts and privacy rules allow recordings to be used for training; PII must be redacted from transcripts before they are stored for training.
+For training, the current model is: it learned from the ~26 development conversations of the 7 h TurnBench dev set (ADR 0003), English role-play by a subset of its 26 actors, recorded in conditions unlike phone calls. Production is not limited the same way. At almost 1M calls a month, and assuming calls last a few minutes, that is tens of thousands of hours of in-domain audio a month, with real callers, real channels and real tasks. This is several hundred times the 104 h TurnBench training set. The bottleneck moves from **audio** to **labels**, and most labels can come from the calls themselves. This assumes customer contracts and privacy rules allow recordings to be used for training; PII must be redacted from transcripts before they are stored for training.
 
 ### Weak labels from what happened next
 
@@ -96,7 +92,7 @@ Annotators use the TurnBench protocol (three annotators, 2-of-3 agreement within
 
 1. **Offline replay.** The detector is causal and stateless, so recorded calls can be replayed through a new model exactly. It must beat the current model on the production evaluation set, and no slice may regress beyond a set tolerance.
 2. **Shadow mode.** The new model scores live traffic and logs the firings it *would* have made, without acting. Comparing them with the live model's firings and their outcomes gives an estimate of its false-cut-in rate and detection latency on real traffic, with no risk.
-3. **A/B test by call.** Start at 1–5% of calls, then ramp up. Judge on the false-cut-in proxy, detection latency and call outcomes, per slice. Roll back automatically if paging-level alerts fire.
+3. **A/B test by call.** Start at 1–5% of calls, then ramp up. Judge on the false-cut-in proxy, detection latency and call outcomes, per slice. Roll back automatically if a paging-level alert is raised.
 
 ## Discussion
 
@@ -104,7 +100,7 @@ Annotators use the TurnBench protocol (three annotators, 2-of-3 agreement within
 
 **Modelling.**
 
-- The encoders are small and frozen, and only linear heads are trained (ADR 0002). The heads can only use what the encoders already represent.
+- The encoders are small and frozen, and only lightweight heads (logistic regression or a small MLP) are trained (ADR 0002). The heads can only use what the encoders already represent.
 - The audio model sees a 1 s window. Longer prosodic context, such as a pitch contour across the whole sentence, is lost; the silence-duration feature only partly compensates.
 - The text model only scores at segment ends, after an assumed 200 ms ASR lag. It cannot fire earlier than that. Its dialogue context is just the agent's previous turn.
 - The combined model is late fusion: a logistic regression over two probabilities and the silence duration. It cannot learn interactions such as "this falling pitch matters only after a complete clause".
@@ -112,7 +108,7 @@ Annotators use the TurnBench protocol (three annotators, 2-of-3 agreement within
 
 **Data.**
 
-- About 7 h from 38 conversations and 26 actors (ADR 0003). Held-out results rest on 12 conversations, so their confidence intervals are wide.
+- The whole dataset is about 7 h from 38 conversations and 26 actors, and only the ~26 development conversations are trained on (ADR 0003). Held-out results rest on 12 conversations, so their confidence intervals are wide.
 - The speakers are actors doing role-play, with clean wideband audio. Production callers are on 8 kHz phone lines, with noise and real stakes.
 - Pauses come from annotation segment ends (a perfect VAD), and text comes from human transcripts (a perfect ASR). Real VAD and ASR errors will make production results worse than ours.
 - Events without 2-of-3 annotator agreement are dropped. The most ambiguous pauses, which are where a detector fails, are missing from both training and evaluation.
@@ -126,16 +122,16 @@ The models are better because they use evidence **other than silence**. They can
 
 - **Text** knows whether the words form a complete answer, in context: "Barcelona." after "Where to?" is complete; "I'd like to fly to" is not. Text models are cheap to train, and multilingual text encoders exist. But they depend on the ASR: they pay its lag, inherit its errors, and see unstable partial transcripts. They are also blind to *how* something was said, such as a trailing "so…" or a list read out with rising pitch.
 - **Audio** hears prosody: falling pitch, final-syllable lengthening, energy decay, breath. It needs no ASR, so it doesn't pay the ASR lag and can be confident by the time the silence starts. It is weaker on meaning, and more sensitive to the channel and noise.
-- **Combined** gets both kinds of evidence, and they fail in different places, so this should do best. Because our fusion is late, it still works when one input is missing: the API accepts audio only or text only.
+- **Combined** gets both kinds of evidence, and they fail in different places, so this should do best. The fusion model needs both inputs, but the single-input models remain available, so the API still answers when audio or text is missing.
 
-If I had to ship only one, I would ship audio for its lower detection latency, then add text. The results section quantifies this on our data.
+If I had to ship only one, I would expect audio to win on detection latency, because it skips the ASR lag (200 ms in our setup), and add text afterwards. The results section tests this expectation on our data.
 
 ### Could a transcriber handle EOT?
 
 Yes, and for a team that owns its ASR it is probably the best end state. There are two ways to do it.
 
 1. **An end-of-turn token in the output.** Add a special token (call it `<eot>`) to the vocabulary, and fine-tune on transcripts that end with `<eot>` when the segment ends in an EOT and without it when it ends in a mid-turn pause. The labels are the same gold events we already build, aligned to the transcripts.
-   - **Parakeet** suits this best. Its FastConformer encoder has cache-aware streaming variants, and its transducer decoder emits tokens frame by frame, so `<eot>` is emitted *at the moment* the model decides. Transcript and firing come out of one model, with no separate ASR lag. Google showed the same idea with an end-of-query token in an RNN-T, and NVIDIA has released a streaming Parakeet variant that emits an end-of-utterance token.
+   - **Parakeet** suits this best. Its FastConformer encoder has cache-aware streaming variants, and its transducer (RNNT/TDT) variants emit tokens frame by frame, so `<eot>` is emitted *at the moment* the model decides. Transcript and firing come out of one model, with no separate ASR lag. Google showed the same idea with an end-of-query token in an RNN-T, and NVIDIA has released a streaming Parakeet variant that emits an end-of-utterance token.
    - **Whisper** is harder. Its encoder works on a padded 30 s window and its decoder is autoregressive, so streaming means re-running it on a growing buffer. Request latency would be far above 100 ms without heavy engineering. Note that Whisper's existing `<|endoftext|>` marks the end of the transcription, not the end of a turn.
 2. **A head on the transcriber's encoder.** Pool the encoder states of the last frames and add a small classifier for P(EOT). This is our audio model with a different encoder; Pipecat's Smart Turn v3 does exactly this on a Whisper Tiny encoder. The ASR already computes these states, so the extra cost is close to zero, and the states carry both acoustic and lexical information.
 
@@ -143,11 +139,11 @@ The cost is coupling. The detector would move inside the ASR, which reverses ADR
 
 ### How does it fit into a voice-agent architecture?
 
-In the assignment's reference architecture (VAD + noise removal → transcriber → turn detector → LLM), the detector sits where it is drawn. It receives the **user's own channel** after noise removal and echo cancellation, plus the partial transcript from the transcriber (ADR 0001). It must never hear the agent's own audio.
+In the assignment's reference architecture (VAD + noise removal → transcriber → turn detector → LLM), the detector sits where it is drawn, with one change: the diagram feeds it only the final transcription, whereas ours also takes audio and the partial transcript, so it can decide before the ASR finalises. It receives the **user's own channel** after noise removal and echo cancellation, plus the partial transcript from the transcriber (ADR 0001). It must never hear the agent's own audio.
 
 - **Calling it.** While the user is in a pause, the orchestrator calls `POST /predict` every 50 ms with the last 1 s of audio, the transcript so far, the agent's previous turn and the silence duration. It applies the firing rule itself: fire on the rising edge where `p_eot` crosses the returned threshold, or fire on the silence backstop. The firing hands the final transcript to the LLM.
 - **Hiding LLM generation time.** The LLM can start generating when `p_eot` passes a lower threshold, with the reply released to TTS only on the firing. The draft is discarded if the user resumes. This cuts response time without adding false cut-ins.
-- **Interruptions.** If the user resumes after a firing, the interruptions module stops TTS as usual. That barge-in is logged as a false-cut-in signal for monitoring.
+- **Barge-ins.** If the user resumes after a firing, the interruptions module stops TTS as usual. That barge-in is logged as a false-cut-in signal for monitoring.
 - **Failure mode.** If the detector errors or misses its request-latency budget, the orchestrator falls back to a plain silence timeout. The agent may be slower, but it never hangs.
 - **Deployment.** The service is stateless, so it scales horizontally behind a load balancer, co-located with the orchestrator so the network doesn't eat the 100 ms budget. As a rough load estimate, 1M calls a month of about 3 minutes each is around 70 concurrent calls on average. At 20 requests per second per call, that is about 1,400 requests per second before peaks, which is less in practice if it is only called during pauses.
 - **Production evolution: a streaming WebSocket.** Re-sending 1 s of audio (32 KB, about 43 KB once base64-encoded) every 50 ms is wasteful. A per-call WebSocket would let the client stream audio once, and let the server keep the rolling buffer, cache encoder state between steps, run the firing rule and push a "fire" event. The trade-off is server-side state, which needs sticky routing and makes scaling and failover harder than with the stateless API.
@@ -159,7 +155,7 @@ Not built; this is how I would do it.
 - **Encoders.** Both current encoders are English: `wav2vec2-base` was pre-trained on English speech, and `all-MiniLM-L6-v2` is an English sentence encoder. Swap in multilingual ones, such as XLS-R or a multilingual Whisper encoder for audio, and a multilingual sentence encoder for text. The detector's interface stays the same, with the language ID from the ASR as an extra input.
 - **Turn-taking differs by language,** so transfer from English must be measured, not assumed:
   - In verb-final languages such as Japanese, German subordinate clauses or Turkish, syntactic completion comes late.
-  - Japanese marks turn ends with sentence-final particles, and its frequent backchannels must not be read as turn changes.
+  - Japanese marks turn ends with sentence-final particles, and its frequent backchannels must not be read as EOTs.
   - In tonal languages, pitch carries word meaning, which weakens pitch as a turn cue.
   - Callers may switch language mid-call.
 - **Data and evaluation.** Use production calls per language with weak labels, plus an annotated evaluation set per language. Report every metric per language, and allow per-language thresholds. Roll out one language at a time, through the same shadow and A/B process.
