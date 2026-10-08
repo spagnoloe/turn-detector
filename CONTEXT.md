@@ -35,6 +35,14 @@ _Avoid_: FPR, false positive rate
 The detector's single decision that the user's turn has ended and the agent should respond now; what gets scored, rather than the per-window probabilities.
 _Avoid_: trigger, detection
 
+**Model**:
+One complete way of deciding when to fire: a plain rule (the baseline, a silence timeout) or a trained classifier plus a firing rule. The four models (baseline, text-only, audio-only, combined) are compared on the same evaluation.
+_Avoid_: system, detector (for one of the four)
+
+**Classifier**:
+The trained part of a model, which outputs P(EOT); the model's firing rule turns it into firings.
+_Avoid_: model (for the trained part alone)
+
 **Barge-in**:
 The user starting to speak while the agent is speaking.
 _Avoid_: interruption (TurnBench's interruption track is a different task)

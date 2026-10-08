@@ -7,6 +7,23 @@ from turnbench.data import SPEAKERS, Annotation, Conversation
 from turnbench.gold import events_for_conversation
 
 
+def turnbench_conversation(
+    annotations: Mapping[tuple[int, str], Sequence[Annotation]],
+    conversation_id: str = "",
+    duration_s: float = 0.0,
+) -> Conversation:
+    """A TurnBench conversation for its gold and consensus code, which read only the annotations.
+
+    The id and duration are placeholders unless given; audio is never attached.
+    """
+    return Conversation(
+        conversation_id=conversation_id,
+        duration_s=duration_s,
+        annotations={key: list(segments) for key, segments in annotations.items()},
+        audio_bytes={},
+    )
+
+
 @dataclass(frozen=True)
 class MidTurnPause:
     """A silence in a speaker's turn, in seconds, after which the same speaker continues."""
@@ -36,14 +53,7 @@ def build_events(annotations: Mapping[tuple[int, str], Sequence[Annotation]]) ->
     speaker resumes first. Pauses are cut short at contrary evidence (disputed regions, the
     speaker's own backchannel, an interruption), but not at the other speaker's backchannel.
     """
-    # TurnBench's gold construction reads only the annotations; id, duration and audio are placeholders.
-    conversation = Conversation(
-        conversation_id="",
-        duration_s=0.0,
-        annotations={key: list(segments) for key, segments in annotations.items()},
-        audio_bytes={},
-    )
-    gold = events_for_conversation(conversation)
+    gold = events_for_conversation(turnbench_conversation(annotations))
     return {
         speaker: SpeakerEvents(
             speaker=speaker,
