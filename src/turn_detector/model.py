@@ -64,20 +64,25 @@ class Model(Protocol):
         ...
 
 
+# One value per knob of a model, in the order its registration names them: (N,) for the
+# baseline's timeout, (threshold, backstop) for the text-only model.
+type Setting = tuple[float, ...]
+
+
 class Fitted(Protocol):
-    """A model fitted to the development conversations, ready to build at any knob setting."""
+    """A model fitted to the development conversations, ready to build at any setting."""
 
-    def build(self, knob: float) -> Model:
-        """The model at this knob setting, as the evaluation scores it. A trained model's
-        classifier never saw the speaker group of the conversation it is scoring."""
+    def build(self, setting: Setting) -> Model:
+        """The model at this setting, as the evaluation scores it. A trained model's classifier
+        never saw the speaker group of the conversation it is scoring."""
         ...
 
-    def save(self, knob: float) -> list[Path]:
-        """Save the final model at the chosen knob setting for serving; a plain rule saves nothing."""
+    def save(self, setting: Setting) -> list[Path]:
+        """Save the final model at the chosen setting for serving; a plain rule saves nothing."""
         ...
 
 
-def silent_until(side: SpeakerSide, end: float, until: float) -> bool:
-    """Whether the user stays silent from a segment end at `end` until `until`: none of their
-    speech overlaps [end, until)."""
-    return not any(segment.start < until and segment.end > end for segment in side.segments)
+def next_speech_start(side: SpeakerSide, end: float) -> float:
+    """When the user is next heard after a segment end at `end`: the earliest start of their
+    speech still going on after `end`, or infinity. A firing at t is in silence iff t <= this."""
+    return min((segment.start for segment in side.segments if segment.end > end), default=float("inf"))

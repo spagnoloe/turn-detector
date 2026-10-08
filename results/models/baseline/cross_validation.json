@@ -1,6 +1,8 @@
 {
   "model": "baseline",
-  "knob_name": "silence timeout N (ms)",
+  "knob_names": [
+    "silence timeout N (ms)"
+  ],
   "folds": [
     {
       "held_out": [
@@ -8,19 +10,25 @@
         "43",
         "44"
       ],
-      "knob": 1100.0
+      "setting": [
+        1100.0
+      ]
     },
     {
       "held_out": [
         "68"
       ],
-      "knob": 1200.0
+      "setting": [
+        1200.0
+      ]
     },
     {
       "held_out": [
         "71"
       ],
-      "knob": 1150.0
+      "setting": [
+        1150.0
+      ]
     },
     {
       "held_out": [
@@ -28,7 +36,9 @@
         "106",
         "107"
       ],
-      "knob": 1200.0
+      "setting": [
+        1200.0
+      ]
     },
     {
       "held_out": [
@@ -36,7 +46,9 @@
         "113",
         "114"
       ],
-      "knob": 1100.0
+      "setting": [
+        1100.0
+      ]
     },
     {
       "held_out": [
@@ -44,7 +56,9 @@
         "124",
         "125"
       ],
-      "knob": 1150.0
+      "setting": [
+        1150.0
+      ]
     },
     {
       "held_out": [
@@ -53,7 +67,9 @@
         "128",
         "129"
       ],
-      "knob": 1250.0
+      "setting": [
+        1250.0
+      ]
     },
     {
       "held_out": [
@@ -62,7 +78,9 @@
         "140",
         "141"
       ],
-      "knob": 1200.0
+      "setting": [
+        1200.0
+      ]
     },
     {
       "held_out": [
@@ -71,12 +89,18 @@
         "159",
         "160"
       ],
-      "knob": 1150.0
+      "setting": [
+        1150.0
+      ]
     }
   ],
-  "knob": 1150.0,
+  "setting": [
+    1150.0
+  ],
   "scores": {
-    "knob": 1150.0,
+    "setting": [
+      1150.0
+    ],
     "recall": 0.8527298850574713,
     "false_cut_in_rate": 0.09845288326300984,
     "detection_latency_p10_ms": 1100.000000000014,

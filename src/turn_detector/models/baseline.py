@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from turn_detector.model import SpeakerSide, silent_until
+from turn_detector.model import SpeakerSide, next_speech_start
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,6 @@ class Baseline:
         firings = set()
         for segment in side.segments:
             firing = segment.end + self.timeout_ms / 1000
-            if silent_until(side, segment.end, firing) and firing <= side.duration_s:
+            if firing <= min(next_speech_start(side, segment.end), side.duration_s):
                 firings.add(firing)
         return sorted(firings)

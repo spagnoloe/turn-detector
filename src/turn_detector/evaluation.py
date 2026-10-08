@@ -6,9 +6,10 @@ against its gold EOTs and mid-turn pauses, exactly as `turnbench.score` does: a 
 firing in [EOT - 0.25 s, EOT + 3 s], any firing in a mid-turn pause is one false cut-in, and
 firings in disputed regions are ignored. Only the EOT task is scored.
 
-A model has one knob (the baseline's timeout N, a classifier's threshold). Each conversation is scored
-once per knob value; a sweep, a cross-validation fold or a held-out evaluation is then just a
-sum over a subset of conversations.
+A model has one or more knobs (the baseline's timeout N; the text-only model's threshold and
+backstop), and a setting is one value for each. Each conversation is scored once per setting; a
+sweep, a cross-validation fold or a held-out evaluation is then just a sum over a subset of
+conversations.
 """
 
 from collections.abc import Iterable, Sequence
@@ -20,7 +21,7 @@ from turnbench.score import TaskScore, merge, score_task
 from turnbench.submission import ConversationPrediction, SpeakerEvents, validate_event_times
 
 from turn_detector.data import ConversationAnnotations, iter_annotations
-from turn_detector.model import Fitted, Model, SpeakerSide
+from turn_detector.model import Fitted, Model, Setting, SpeakerSide
 from turn_detector.events import turnbench_conversation
 from turn_detector.split import ConversationInfo, speaker_groups
 from turn_detector.timeline import speaker_sides
@@ -57,9 +58,9 @@ def evaluation_conversation(conversation: ConversationAnnotations, duration_s: f
 
 @dataclass(frozen=True)
 class Scores:
-    """Aggregate EOT scores at one knob setting. Latencies are detection latencies in ms."""
+    """Aggregate EOT scores at one setting. Latencies are detection latencies in ms."""
 
-    knob: float
+    setting: Setting
     recall: float
     false_cut_in_rate: float
     detection_latency_p10_ms: float
@@ -71,10 +72,10 @@ class Scores:
     tn: int
 
     @staticmethod
-    def of(knob: float, score: TaskScore) -> "Scores":
+    def of(setting: Setting, score: TaskScore) -> "Scores":
         detection_latency = score.latency()
         return Scores(
-            knob, score.recall, score.fp_rate, detection_latency.p10, detection_latency.p50, detection_latency.p90,
+            setting, score.recall, score.fp_rate, detection_latency.p10, detection_latency.p50, detection_latency.p90,
             score.tp, score.fn, score.fp, score.tn,
         )  # fmt: skip
 
@@ -93,30 +94,30 @@ def score_conversation(model: Model, conversation: EvaluationConversation) -> Ta
 
 
 @dataclass(frozen=True)
-class KnobScores:
-    """Per-conversation scores of one model at every knob setting, in knob order."""
+class SettingScores:
+    """Per-conversation scores of one model at every setting, in sweep order."""
 
-    by_knob: dict[float, dict[str, TaskScore]]
+    by_setting: dict[Setting, dict[str, TaskScore]]
 
-    def total(self, knob: float, conversation_ids: Iterable[str]) -> TaskScore:
+    def total(self, setting: Setting, conversation_ids: Iterable[str]) -> TaskScore:
         total = TaskScore()
         for conversation_id in conversation_ids:
-            merge(total, self.by_knob[knob][conversation_id])
+            merge(total, self.by_setting[setting][conversation_id])
         return total
 
     def curve(self, conversation_ids: Sequence[str]) -> list[Scores]:
-        """The sweep over these conversations: scores at every knob setting, in knob order."""
-        return [Scores.of(knob, self.total(knob, conversation_ids)) for knob in self.by_knob]
+        """The sweep over these conversations: scores at every setting, in sweep order."""
+        return [Scores.of(setting, self.total(setting, conversation_ids)) for setting in self.by_setting]
 
 
-def score_knobs(
-    model: Fitted, knob_values: Sequence[float], conversations: Sequence[EvaluationConversation]
-) -> KnobScores:
-    by_knob = {}
-    for value in knob_values:
-        built = model.build(value)
-        by_knob[value] = {c.info.conversation_id: score_conversation(built, c) for c in conversations}
-    return KnobScores(by_knob)
+def score_settings(
+    fitted: Fitted, settings: Sequence[Setting], conversations: Sequence[EvaluationConversation]
+) -> SettingScores:
+    by_setting = {}
+    for setting in settings:
+        model = fitted.build(setting)
+        by_setting[setting] = {c.info.conversation_id: score_conversation(model, c) for c in conversations}
+    return SettingScores(by_setting)
 
 
 def operating_point(curve: Sequence[Scores], max_false_cut_in_rate: float = MAX_FALSE_CUT_IN_RATE) -> Scores:
@@ -126,41 +127,41 @@ def operating_point(curve: Sequence[Scores], max_false_cut_in_rate: float = MAX_
     """
     allowed = [s for s in curve if s.false_cut_in_rate <= max_false_cut_in_rate]
     if not allowed:
-        raise ValueError(f"no knob setting reaches a false-cut-in rate of {max_false_cut_in_rate} or less")
+        raise ValueError(f"no setting reaches a false-cut-in rate of {max_false_cut_in_rate} or less")
     return max(allowed, key=lambda s: (s.recall, -s.detection_latency_p50_ms))
 
 
 @dataclass(frozen=True)
 class Fold:
     held_out: list[str]
-    knob: float
+    setting: Setting
 
 
 @dataclass(frozen=True)
 class CrossValidation:
-    """Knob selection by cross-validation, one speaker group held out per fold.
+    """Setting selection by cross-validation, one speaker group held out per fold.
 
-    `scores` pools every fold's held-out conversations, each scored at the knob chosen without
-    them; its `knob` field is `knob`, the setting chosen on all the conversations.
+    `scores` pools every fold's held-out conversations, each scored at the setting chosen without
+    them; its `setting` field is `setting`, the one chosen on all the conversations.
     """
 
     folds: list[Fold]
-    knob: float
+    setting: Setting
     scores: Scores
 
 
-def cross_validate(knob_scores: KnobScores, conversations: Sequence[ConversationInfo]) -> CrossValidation:
+def cross_validate(setting_scores: SettingScores, conversations: Sequence[ConversationInfo]) -> CrossValidation:
     """Leave one speaker group out (ADR 0003): a fold holds out every conversation of a set of actors."""
     all_ids = [c.conversation_id for c in conversations]
     folds, pooled = [], TaskScore()
     for group in speaker_groups(conversations):
         held_out = [c.conversation_id for c in group]
         training = [i for i in all_ids if i not in held_out]
-        knob = operating_point(knob_scores.curve(training)).knob
-        folds.append(Fold(held_out, knob))
-        merge(pooled, knob_scores.total(knob, held_out))
-    knob = operating_point(knob_scores.curve(all_ids)).knob
-    return CrossValidation(folds, knob, Scores.of(knob, pooled))
+        setting = operating_point(setting_scores.curve(training)).setting
+        folds.append(Fold(held_out, setting))
+        merge(pooled, setting_scores.total(setting, held_out))
+    setting = operating_point(setting_scores.curve(all_ids)).setting
+    return CrossValidation(folds, setting, Scores.of(setting, pooled))
 
 
 def load_conversations(conversation_ids: Iterable[str]) -> list[EvaluationConversation]:

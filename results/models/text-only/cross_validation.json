@@ -1,6 +1,9 @@
 {
   "model": "text-only",
-  "knob_name": "P_text threshold",
+  "knob_names": [
+    "P_text threshold",
+    "backstop (ms)"
+  ],
   "folds": [
     {
       "held_out": [
@@ -8,19 +11,28 @@
         "43",
         "44"
       ],
-      "knob": 0.83
+      "setting": [
+        0.9,
+        1100.0
+      ]
     },
     {
       "held_out": [
         "68"
       ],
-      "knob": 0.83
+      "setting": [
+        0.88,
+        1200.0
+      ]
     },
     {
       "held_out": [
         "71"
       ],
-      "knob": 0.82
+      "setting": [
+        0.9,
+        1150.0
+      ]
     },
     {
       "held_out": [
@@ -28,7 +40,10 @@
         "106",
         "107"
       ],
-      "knob": 0.82
+      "setting": [
+        0.87,
+        1200.0
+      ]
     },
     {
       "held_out": [
@@ -36,7 +51,10 @@
         "113",
         "114"
       ],
-      "knob": 0.83
+      "setting": [
+        0.9,
+        1100.0
+      ]
     },
     {
       "held_out": [
@@ -44,7 +62,10 @@
         "124",
         "125"
       ],
-      "knob": 0.83
+      "setting": [
+        0.9,
+        1150.0
+      ]
     },
     {
       "held_out": [
@@ -53,7 +74,10 @@
         "128",
         "129"
       ],
-      "knob": 0.83
+      "setting": [
+        0.87,
+        1250.0
+      ]
     },
     {
       "held_out": [
@@ -62,7 +86,10 @@
         "140",
         "141"
       ],
-      "knob": 0.83
+      "setting": [
+        0.9,
+        1200.0
+      ]
     },
     {
       "held_out": [
@@ -71,20 +98,29 @@
         "159",
         "160"
       ],
-      "knob": 0.81
+      "setting": [
+        0.86,
+        1150.0
+      ]
     }
   ],
-  "knob": 0.82,
+  "setting": [
+    0.9,
+    1150.0
+  ],
   "scores": {
-    "knob": 0.82,
-    "recall": 0.8326149425287356,
-    "false_cut_in_rate": 0.10267229254571027,
-    "detection_latency_p10_ms": 200.00000000004547,
-    "detection_latency_p50_ms": 1500.0,
-    "detection_latency_p90_ms": 1500.0,
-    "tp": 1159,
-    "fn": 233,
-    "fp": 73,
-    "tn": 638
+    "setting": [
+      0.9,
+      1150.0
+    ],
+    "recall": 0.8570402298850575,
+    "false_cut_in_rate": 0.11251758087201125,
+    "detection_latency_p10_ms": 1100.0000000000014,
+    "detection_latency_p50_ms": 1149.9999999999986,
+    "detection_latency_p90_ms": 1200.0000000000455,
+    "tp": 1193,
+    "fn": 199,
+    "fp": 80,
+    "tn": 631
   }
 }

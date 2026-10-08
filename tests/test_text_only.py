@@ -41,25 +41,34 @@ def side(*segments: tuple[float, float, str], other: Sequence[tuple[float, float
 
 
 def test_fires_200_ms_after_the_segment_end_when_confident():
-    assert TextOnly(Stub(), threshold=0.5).fire(side((1.0, 3.0, "I'd like to fly to Barcelona."))) == [3.2]
+    assert TextOnly(Stub(), threshold=0.5, backstop_s=1.5).fire(side((1.0, 3.0, "I'd like to fly to Barcelona."))) == [3.2]
 
 
 def test_fires_at_the_1_5_s_backstop_when_not_confident():
-    assert TextOnly(Stub(), threshold=0.5).fire(side((1.0, 3.0, "I'd like to fly to"))) == [4.5]
+    assert TextOnly(Stub(), threshold=0.5, backstop_s=1.5).fire(side((1.0, 3.0, "I'd like to fly to"))) == [4.5]
+
+
+def test_the_backstop_is_a_setting():
+    assert TextOnly(Stub(), threshold=0.5, backstop_s=0.8).fire(side((1.0, 3.0, "I'd like to fly to"))) == [3.8]
+
+
+def test_the_backstop_cannot_come_before_the_text_is_read():
+    with pytest.raises(ValueError, match="backstop"):
+        TextOnly(Stub(), threshold=0.5, backstop_s=0.1)
 
 
 def test_does_not_fire_when_the_user_resumes_first():
     # Resumes 0.1 s after a confident end, and 1 s after an unconfident one.
-    model = TextOnly(Stub(), threshold=0.5)
+    model = TextOnly(Stub(), threshold=0.5, backstop_s=1.5)
     assert model.fire(side((1.0, 3.0, "Yes."), (3.1, 5.0, "So"), (6.0, 7.0, "Friday."))) == [7.2]
 
 
 def test_does_not_fire_after_the_conversation_ends():
-    assert TextOnly(Stub(), threshold=0.5).fire(side((1.0, 3.0, "Well"), duration_s=4.0)) == []
+    assert TextOnly(Stub(), threshold=0.5, backstop_s=1.5).fire(side((1.0, 3.0, "Well"), duration_s=4.0)) == []
 
 
 def test_segments_ending_together_fire_once():
-    model = TextOnly(Stub(), threshold=0.5)
+    model = TextOnly(Stub(), threshold=0.5, backstop_s=1.5)
     assert model.fire(side((1.0, 3.0, "To Barcelona."), (2.0, 3.0, "Barcelona."))) == [3.2]
 
 
@@ -103,18 +112,18 @@ class HashEncoder:
 def test_saved_model_loads_back_and_predicts_the_same(tmp_path):
     rng = np.random.default_rng(0)
     head = LogisticHead(weights=rng.standard_normal(8), bias=0.3)
-    model = TextOnly(TextClassifier(HashEncoder(), head), threshold=0.42)
+    model = TextOnly(TextClassifier(HashEncoder(), head), threshold=0.42, backstop_s=0.9)
     contexts = [TextContext("Where to?", "Barcelona."), TextContext("", "Hi"), TextContext("And when?", "Um,")]
     path = tmp_path / "text-only.json"
     save_text_only(model, path)
     loaded = load_text_only(path, encoder=HashEncoder())
-    assert loaded.threshold == 0.42
+    assert (loaded.threshold, loaded.backstop_s) == (0.42, 0.9)
     assert loaded.classifier.p_eot(contexts) == model.classifier.p_eot(contexts)
 
 
 def test_loading_with_a_different_encoder_fails(tmp_path):
     path = tmp_path / "text-only.json"
-    save_text_only(TextOnly(TextClassifier(HashEncoder(), LogisticHead(np.ones(8), 0.0)), threshold=0.5), path)
+    save_text_only(TextOnly(TextClassifier(HashEncoder(), LogisticHead(np.ones(8), 0.0)), threshold=0.5, backstop_s=1.5), path)
     other = HashEncoder()
     other.name = "another encoder"
     with pytest.raises(ValueError, match="encoder"):

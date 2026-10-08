@@ -2,8 +2,9 @@
 
 At every segment end the classifier reads the other speaker's previous turn and the user's turn
 so far, and outputs P_text(EOT). The firing rule: fire at segment end + 200 ms (the assumed ASR
-finalisation lag) if P_text >= the threshold, otherwise at segment end + 1.5 s, either only if
-the user is still silent. The threshold is the knob.
+finalisation lag) if P_text >= the threshold, otherwise at segment end + the backstop, either only
+if the user is still silent. The threshold and the backstop are the two knobs, tuned together; with
+the threshold above every P_text, the model is the baseline with the backstop as its timeout.
 
 The classifier is a frozen sentence encoder (`all-MiniLM-L6-v2`) with a logistic-regression head
 (ADR 0002), trained on one example per labelled pause: segment ends that are a gold EOT or the
@@ -18,7 +19,7 @@ and "hm" are kept, since an ASR usually does, including when an annotator bracke
 
 import json
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -28,12 +29,11 @@ import numpy as np
 
 from turn_detector.data import ARTIFACTS_DIR
 from turn_detector.evaluation import EvaluationConversation
-from turn_detector.model import Model, SpeakerSide, silent_until
+from turn_detector.model import Setting, SpeakerSide, next_speech_start
 from turn_detector.split import speaker_groups
 
 NAME = "text-only"
 ASR_LAG_S = 0.2
-BACKSTOP_S = 1.5
 ENCODER = "sentence-transformers/all-MiniLM-L6-v2"
 MAX_TOKENS = 64
 ARTIFACT_PATH = ARTIFACTS_DIR / NAME / "text-only.json"
@@ -164,26 +164,57 @@ class TextClassifier:
 
 
 @dataclass(frozen=True)
+class ScoredPause:
+    """A segment end with the classifier's P_text there, and when the user is next heard."""
+
+    end: float
+    p_eot: float
+    next_speech_start: float
+
+
+def scored_pauses(side: SpeakerSide, classifier: Classifier) -> list[ScoredPause]:
+    """Every distinct segment end of the user's, in time order, scored by `classifier`."""
+    ends = sorted({segment.end for segment in side.segments})
+    p_eot = classifier.p_eot([text_context(side, end) for end in ends])
+    return [ScoredPause(end, p, next_speech_start(side, end)) for end, p in zip(ends, p_eot)]
+
+
+def firings(pauses: Sequence[ScoredPause], threshold: float, backstop_s: float, duration_s: float) -> list[float]:
+    """The firing rule: 200 ms after a confident end, `backstop_s` after any other, if still silent."""
+    firings = []
+    for pause in pauses:
+        firing = pause.end + (ASR_LAG_S if pause.p_eot >= threshold else backstop_s)
+        if firing <= min(pause.next_speech_start, duration_s):
+            firings.append(firing)
+    return firings
+
+
+def check_backstop(backstop_s: float) -> None:
+    # A shorter backstop would fire on unconfident ends before confident ones, and before the
+    # words are read.
+    if backstop_s < ASR_LAG_S:
+        raise ValueError(f"the backstop ({backstop_s} s) can't be shorter than the ASR lag ({ASR_LAG_S} s)")
+
+
+@dataclass(frozen=True)
 class TextOnly:
-    """Fire 200 ms after a segment end if P_text >= `threshold`, else 1.5 s after it, if silent."""
+    """Fire 200 ms after a segment end if P_text >= `threshold`, else `backstop_s` after it, if silent."""
 
     classifier: Classifier
     threshold: float
+    backstop_s: float
     name: str = NAME
 
+    def __post_init__(self) -> None:
+        check_backstop(self.backstop_s)
+
     def fire(self, side: SpeakerSide) -> list[float]:
-        ends = sorted({segment.end for segment in side.segments})
-        p_eot = self.classifier.p_eot([text_context(side, end) for end in ends])
-        firings = []
-        for end, p in zip(ends, p_eot):
-            firing = end + (ASR_LAG_S if p >= self.threshold else BACKSTOP_S)
-            if silent_until(side, end, firing) and firing <= side.duration_s:
-                firings.append(firing)
-        return firings
+        return firings(scored_pauses(side, self.classifier), self.threshold, self.backstop_s, side.duration_s)
 
 
 def save_text_only(model: TextOnly, path: Path = ARTIFACT_PATH) -> Path:
-    """Save the head, its threshold and the encoder's name; the encoder itself is downloaded."""
+    """Save the head, its threshold and backstop, and the encoder's name; the encoder itself is
+    downloaded."""
     if not isinstance(model.classifier, TextClassifier):
         raise TypeError("only a model with a trained TextClassifier can be saved")
     classifier = model.classifier
@@ -192,6 +223,7 @@ def save_text_only(model: TextOnly, path: Path = ARTIFACT_PATH) -> Path:
         "encoder": classifier.encoder.name,
         "max_tokens": getattr(classifier.encoder, "max_tokens", MAX_TOKENS),
         "threshold": model.threshold,
+        "backstop_s": model.backstop_s,
         "bias": classifier.head.bias,
         "weights": classifier.head.weights.tolist(),
     }
@@ -206,7 +238,7 @@ def load_text_only(path: Path = ARTIFACT_PATH, encoder: Encoder | None = None) -
     if encoder.name != stored["encoder"]:
         raise ValueError(f"the head was trained on encoder {stored['encoder']!r}, not {encoder.name!r}")
     head = LogisticHead(np.array(stored["weights"]), stored["bias"])
-    return TextOnly(TextClassifier(encoder, head), stored["threshold"])
+    return TextOnly(TextClassifier(encoder, head), stored["threshold"], stored["backstop_s"])
 
 
 def labelled_pauses(conversation: EvaluationConversation) -> list[tuple[TextContext, bool]]:
@@ -223,55 +255,60 @@ def labelled_pauses(conversation: EvaluationConversation) -> list[tuple[TextCont
 
 @dataclass(frozen=True)
 class CrossFitted:
-    """Scores each conversation with the model whose head never saw that conversation's speakers."""
+    """The text-only model as the evaluation scores it, at one setting.
 
-    by_conversation: dict[str, Model]
+    Each side's pauses were scored once, by the head that never saw that conversation's
+    speakers, so a sweep over settings only re-applies the firing rule.
+    """
+
+    pauses: dict[tuple[str, int], list[ScoredPause]]
+    threshold: float
+    backstop_s: float
     name: str = NAME
 
+    def __post_init__(self) -> None:
+        check_backstop(self.backstop_s)
+
     def fire(self, side: SpeakerSide) -> list[float]:
-        return self.by_conversation[side.conversation_id].fire(side)
+        pauses = self.pauses[(side.conversation_id, side.speaker)]
+        return firings(pauses, self.threshold, self.backstop_s, side.duration_s)
 
 
 @dataclass(frozen=True)
 class FittedTextOnly:
-    """Heads trained per cross-validation fold for the evaluation, and one on all conversations."""
+    """Every development side's pauses scored by cross-fitted heads, and a head trained on all
+    conversations. A setting is (threshold, backstop in ms)."""
 
-    encoder: Encoder
-    fold_heads: dict[str, LogisticHead]
-    final_head: LogisticHead
+    pauses: dict[tuple[str, int], list[ScoredPause]]
+    final_classifier: TextClassifier
 
-    def build(self, knob: float) -> CrossFitted:
-        return CrossFitted(
-            {
-                conversation_id: TextOnly(TextClassifier(self.encoder, head), knob)
-                for conversation_id, head in self.fold_heads.items()
-            }
-        )
+    def build(self, setting: Setting) -> CrossFitted:
+        threshold, backstop_ms = setting
+        return CrossFitted(self.pauses, threshold, backstop_ms / 1000)
 
-    def save(self, knob: float) -> list[Path]:
-        return [save_text_only(TextOnly(TextClassifier(self.encoder, self.final_head), knob))]
+    def save(self, setting: Setting) -> list[Path]:
+        threshold, backstop_ms = setting
+        return [save_text_only(TextOnly(self.final_classifier, threshold, backstop_ms / 1000))]
 
 
-def fit(
-    conversations: Sequence[EvaluationConversation],
-    encoder: Encoder | None = None,
-    train: Callable[[np.ndarray, np.ndarray], LogisticHead] = train_head,
-) -> FittedTextOnly:
+def fit(conversations: Sequence[EvaluationConversation]) -> FittedTextOnly:
     """Train one head per speaker group, on every other group (the folds `cross_validate` uses,
     so a fold's held-out conversations are always scored by a head that never saw them), and a
     final head on every conversation."""
-    encoder = encoder or SentenceEncoder()
+    encoder = SentenceEncoder()
     examples = {c.info.conversation_id: labelled_pauses(c) for c in conversations}
 
     def head_trained_on(conversation_ids: Sequence[str]) -> LogisticHead:
         pauses = [pause for conversation_id in conversation_ids for pause in examples[conversation_id]]
         embeddings = encoder([classifier_input(context) for context, _ in pauses])
-        return train(embeddings, np.array([is_eot for _, is_eot in pauses]))
+        return train_head(embeddings, np.array([is_eot for _, is_eot in pauses]))
 
     all_ids = list(examples)
-    fold_heads = {}
+    pauses = {}
     for group in speaker_groups([c.info for c in conversations]):
         held_out = {c.conversation_id for c in group}
-        head = head_trained_on([i for i in all_ids if i not in held_out])
-        fold_heads |= dict.fromkeys(held_out, head)
-    return FittedTextOnly(encoder, fold_heads, head_trained_on(all_ids))
+        classifier = TextClassifier(encoder, head_trained_on([i for i in all_ids if i not in held_out]))
+        for conversation in (c for c in conversations if c.info.conversation_id in held_out):
+            for side in conversation.sides:
+                pauses[(conversation.info.conversation_id, side.speaker)] = scored_pauses(side, classifier)
+    return FittedTextOnly(pauses, TextClassifier(encoder, head_trained_on(all_ids)))
