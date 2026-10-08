@@ -106,6 +106,21 @@ Annotators use the TurnBench protocol (three annotators, 2-of-3 agreement within
 - The combined model is late fusion: a logistic regression over two probabilities and the silence duration. It cannot learn interactions such as "this falling pitch matters only after a complete clause".
 - One global threshold for every speaker and context.
 
+**Why the text model barely beats the baseline.** At its chosen setting the text-only model matches the baseline (recall 0.857 against 0.853, both at a median detection latency of 1150 ms). Its head ranks EOTs above mid-turn pauses barely better than chance. Simpler classifiers trained on the same 2103 labelled pauses and scored the same way, out of fold with one speaker group held out per fold, do better:
+
+| Classifier | Out-of-fold AUC |
+|---|---:|
+| Logistic regression on 3 handcrafted features (ends with "?", ends without punctuation, word count) | 0.65 |
+| TF-IDF on the last 6 words | 0.60 |
+| MiniLM on the last 6 words | 0.58 |
+| MiniLM on the user's turn so far only | 0.57 |
+| MiniLM on previous turn `[SEP]` turn so far (the shipped input) | 0.51 |
+
+- **Truncation is not the cause.** 1327 of the 2103 inputs are longer than 64 tokens, but the tokenizer truncates from the left, so the end of the user's turn is always kept.
+- **The likely cause is the encoder.** A mean-pooled sentence embedding captures what the text is about. Whether the turn sounds finished depends on its last few words, and that signal is diluted across up to 64 tokens. Adding the other speaker's turn dilutes it further.
+- **The data is hard for text, whatever the encoder.** 536 of the 711 mid-turn pauses follow a segment that ends in a full stop. Speakers often pause after a complete sentence and then carry on, so even the best of these classifiers would separate few such pauses from EOTs at a false-cut-in rate of 0.10. Prosody, in the audio model, is the better hope for these pauses.
+- **Cheap fixes, not done here:** feed only the end of the user's turn, add the handcrafted features to the head, or score completeness with a small language model's probability of the turn ending, as LiveKit's turn detector does.
+
 **Data.**
 
 - The whole dataset is about 7 h from 38 conversations and 26 actors, and only the ~26 development conversations are trained on (ADR 0003). Held-out results rest on 12 conversations, so their confidence intervals are wide.
