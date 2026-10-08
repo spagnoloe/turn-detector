@@ -8,20 +8,21 @@ firings in disputed regions are ignored. Only the EOT task is scored.
 
 A model has one or more knobs (the baseline's timeout N; the text-only model's threshold and
 backstop), and a setting is one value for each. Each conversation is scored once per setting; a
-sweep, a cross-validation fold or a held-out evaluation is then just a sum over a subset of
-conversations.
+sweep or a cross-validation fold is then just a sum over a subset of conversations. The held-out
+evaluation is separate: each final model, trained on all development conversations, is scored
+once on the held-out conversations at the setting cross-validation chose (`score_held_out`).
 """
 
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, replace
 
 from turnbench.durations import load_durations
 from turnbench.gold import ConversationEvents, events_for_conversation
 from turnbench.score import TaskScore, merge, score_task
 from turnbench.submission import ConversationPrediction, SpeakerEvents, validate_event_times
 
-from turn_detector.data import ConversationAnnotations, iter_annotations
-from turn_detector.model import Fitted, Model, Setting, SpeakerSide
+from turn_detector.data import ConversationAnnotations, iter_annotations, load_audio
+from turn_detector.model import Audio, Fitted, Model, Setting, SpeakerSide
 from turn_detector.events import turnbench_conversation
 from turn_detector.split import ConversationInfo, speaker_groups
 from turn_detector.timeline import speaker_sides
@@ -162,6 +163,21 @@ def cross_validate(setting_scores: SettingScores, conversations: Sequence[Conver
         merge(pooled, setting_scores.total(setting, held_out))
     setting = operating_point(setting_scores.curve(all_ids)).setting
     return CrossValidation(folds, setting, Scores.of(setting, pooled))
+
+
+def score_held_out(
+    model: Model,
+    setting: Setting,
+    conversations: Sequence[EvaluationConversation],
+    audio: Callable[[str, int], Audio] = load_audio,
+) -> Scores:
+    """The final `model`, at the `setting` it was saved at, scored on these conversations with each
+    user's audio loaded (one conversation at a time, since the audio is large)."""
+    total = TaskScore()
+    for conversation in conversations:
+        sides = [replace(side, audio=audio(side.conversation_id, side.speaker)) for side in conversation.sides]
+        merge(total, score_conversation(model, replace(conversation, sides=sides)))
+    return Scores.of(setting, total)
 
 
 def load_conversations(conversation_ids: Iterable[str]) -> list[EvaluationConversation]:

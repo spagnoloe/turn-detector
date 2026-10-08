@@ -2,7 +2,8 @@
 
 Each model lives in its own module here. MODELS registers it for `scripts/evaluate.py`: how to fit
 it to the development conversations, its knobs, the settings to sweep, and its colour in the
-comparison figures. What the trained models share (their firing rule, cross-fitting, saving and
+comparison figures, and how to load the final model at the setting cross-validation chose, for
+the held-out evaluation. What the trained models share (their firing rule, cross-fitting, saving and
 how the API serves them) is in `classified`, and each trained model's `SERVING` describes which
 requests it answers. Everything model-specific is in this package; the rest of `turn_detector` is
 shared by every model.
@@ -34,12 +35,15 @@ class Rule:
 @dataclass(frozen=True)
 class RegisteredModel:
     """A model as the evaluation runs it: `fit(conversations)` trains it on those conversations,
-    and the result builds the model at any setting: one value per knob, in `knob_names` order."""
+    and the result builds the model at any setting: one value per knob, in `knob_names` order.
+    `final(setting)` is the final model, trained on all development conversations and saved by
+    `scripts/evaluate.py`, at the setting chosen; it refuses a saved model at any other."""
 
     name: str
     knob_names: tuple[str, ...]
     settings: Sequence[Setting]
     fit: Callable[[Sequence[EvaluationConversation]], Fitted]
+    final: Callable[[Setting], Model]
     colour: str
 
     def describe(self, setting: Setting) -> str:
@@ -61,6 +65,7 @@ MODELS = {
             knob_names=("silence timeout N (ms)",),
             settings=[(float(n),) for n in range(0, 3001, 50)],
             fit=lambda conversations: Rule(lambda setting: Baseline(timeout_ms=setting[0])),
+            final=lambda setting: Baseline(timeout_ms=setting[0]),
             colour="#2a78d6",
         ),
         RegisteredModel(
@@ -69,6 +74,7 @@ MODELS = {
             # The backstop starts at the 200 ms ASR lag; a threshold of 1 never fires early.
             settings=[(i / 100, float(ms)) for i in range(101) for ms in range(200, 3001, 50)],
             fit=text_only.fit,
+            final=text_only.final,
             colour="#e07b39",
         ),
         RegisteredModel(
@@ -79,6 +85,7 @@ MODELS = {
             # rate by several points. A threshold of 1 never fires early.
             settings=[(i / 1000, float(ms)) for i in range(1001) for ms in range(200, 3001, 50)],
             fit=audio_only.fit,
+            final=audio_only.final,
             colour="#3a9e6a",
         ),
         RegisteredModel(
@@ -87,6 +94,7 @@ MODELS = {
             # The audio-only model's settings, so the two are compared at the same firing rule.
             settings=[(i / 1000, float(ms)) for i in range(1001) for ms in range(200, 3001, 50)],
             fit=combined.fit,
+            final=combined.final,
             colour="#8a5cc2",
         ),
     ]

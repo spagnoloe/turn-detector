@@ -138,6 +138,17 @@ def check_encoder[E: Named](stored: dict, encoder: E) -> E:
     return encoder
 
 
+def check_saved_setting(name: str, threshold: float, backstop_s: float, setting: Setting) -> None:
+    """Refuse a saved model that isn't at `setting` (threshold, backstop in ms): its artifact is
+    stale, from an evaluation older than the results that chose `setting`."""
+    chosen_threshold, chosen_backstop_ms = setting
+    if not (math.isclose(threshold, chosen_threshold) and math.isclose(backstop_s * 1000, chosen_backstop_ms)):
+        raise ValueError(
+            f"the saved {name} model is at threshold {threshold:g}, backstop {backstop_s * 1000:g} ms, not at the "
+            f"setting chosen in cross-validation, {setting}; re-run scripts/evaluate.py {name}"
+        )
+
+
 def save_json(stored: dict, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(stored, indent=2) + "\n")

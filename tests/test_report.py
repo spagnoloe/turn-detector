@@ -16,6 +16,7 @@ def test_results_with_two_knobs_load_back(tmp_path):
         knob_names=("threshold", "backstop (ms)"),
         settings=[(0.5, 1000.0), (0.9, 1500.0)],
         fit=lambda conversations: Rule(lambda setting: Baseline(timeout_ms=setting[1])),
+        final=lambda setting: Baseline(timeout_ms=setting[1]),
         colour="#e07b39",
     )
     sweep = [scores((0.5, 1000.0), 0.9, 0.2), scores((0.9, 1500.0), 0.8, 0.05)]
