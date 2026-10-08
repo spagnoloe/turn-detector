@@ -1,7 +1,9 @@
-"""Sweep a model over its knob on the development conversations, cross-validate the knob, write the
-model's results to results/models/<model>/, and rebuild the comparison in results/comparison/.
+"""Fit a model to the development conversations, sweep it over its knob, cross-validate the knob,
+write the model's results to results/models/<model>/, save a trained model at the chosen knob to
+artifacts/<model>/, and rebuild the comparison in results/comparison/.
 
     uv run python scripts/evaluate.py baseline
+    uv run python scripts/evaluate.py text-only
 
 The held-out conversations are not touched.
 """
@@ -20,7 +22,8 @@ def main() -> None:
     model = MODELS[parser.parse_args().model]
 
     conversations = load_conversations(load_split().development)
-    knob_scores = score_knobs(model, conversations)
+    fitted = model.fit(conversations)
+    knob_scores = score_knobs(fitted, model.knob_values, conversations)
     cross_validation = cross_validate(knob_scores, [c.info for c in conversations])
     curve = knob_scores.curve([c.info.conversation_id for c in conversations])
 
@@ -31,7 +34,7 @@ def main() -> None:
         f"  cross-validated: recall {s.recall:.3f}, false-cut-in rate {s.false_cut_in_rate:.3f}, "
         f"detection latency p50 {s.detection_latency_p50_ms:.0f} ms"
     )
-    paths = save(ModelResults(model, curve, cross_validation)) + write_comparison()
+    paths = save(ModelResults(model, curve, cross_validation)) + fitted.save(cross_validation.knob) + write_comparison()
     for path in paths:
         print(f"wrote {path}")
     print()

@@ -8,6 +8,8 @@ dependencies = [
     "huggingface-hub>=1.17.0",
     "matplotlib>=3.11.2",
     "pyarrow>=24.0.0",
+    "scikit-learn>=1.9.1",
+    "sentence-transformers>=6.1.0",
     "turnbench",
 ]
 

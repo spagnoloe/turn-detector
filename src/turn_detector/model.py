@@ -5,11 +5,13 @@ has ended and the agent should respond. It sees what a live detector would have:
 audio channel, the user's speech segments with their transcripts, and the other speaker's turns.
 Each model owns its firing rule. Firings, not probabilities, are what gets scored; a model built
 on a classifier's P(EOT) (the served detector's output, ADR 0001) turns it into firings with its
-threshold. Models must be causal: a firing at time t may depend on nothing after t
+threshold. A trained model is fitted on the development conversations first (`Fitted`). Models
+must be causal: a firing at time t may depend on nothing after t
 (tests/test_causality.py checks every model).
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -60,3 +62,22 @@ class Model(Protocol):
     def fire(self, side: SpeakerSide) -> list[float]:
         """Firing times in seconds, strictly increasing and within the conversation."""
         ...
+
+
+class Fitted(Protocol):
+    """A model fitted to the development conversations, ready to build at any knob setting."""
+
+    def build(self, knob: float) -> Model:
+        """The model at this knob setting, as the evaluation scores it. A trained model's
+        classifier never saw the speaker group of the conversation it is scoring."""
+        ...
+
+    def save(self, knob: float) -> list[Path]:
+        """Save the final model at the chosen knob setting for serving; a plain rule saves nothing."""
+        ...
+
+
+def silent_until(side: SpeakerSide, end: float, until: float) -> bool:
+    """Whether the user stays silent from a segment end at `end` until `until`: none of their
+    speech overlaps [end, until)."""
+    return not any(segment.start < until and segment.end > end for segment in side.segments)

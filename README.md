@@ -43,7 +43,7 @@ This prints counts per split and per speaker. The dev-set totals (1904 EOTs, 106
 
 ## Models
 
-A **model** is one complete way of deciding when the user's turn has ended: a plain rule (the baseline) or a trained classifier plus a firing rule. Four are planned: the baseline, text-only, audio-only and combined.
+A **model** is one complete way of deciding when the user's turn has ended: a plain rule (the baseline) or a trained classifier plus a firing rule. Four are planned: the baseline, text-only, audio-only and combined; the first two exist.
 
 Code is split into what every model shares and what belongs to one model:
 
@@ -54,8 +54,11 @@ Code is split into what every model shares and what belongs to one model:
 | `turn_detector.evaluation`, `turn_detector.report` | Shared: scoring, knob sweep, cross-validation, results table and figures. |
 | `turn_detector.models` | One module per model, plus `MODELS`, the registry of each model's knob, swept values and figure colour. |
 | `turn_detector.models.baseline` | The baseline, a silence timeout: fires at segment end + N ms if the user hasn't resumed by then. This is what plain voice-activity detection achieves. |
+| `turn_detector.models.text_only` | The text-only model: at each segment end, a frozen `all-MiniLM-L6-v2` encoder with a logistic-regression head reads the other speaker's previous turn and the user's turn so far (the last 64 tokens) and outputs P_text(EOT). It fires at segment end + 200 ms (the assumed ASR lag) if P_text ≥ the threshold, otherwise at segment end + 1.5 s, either only if the user is still silent. |
 
 The segments are TurnBench's 2-of-3 consensus segments, so their ends are the pauses every model sees: a perfect pause detector in place of a real VAD. Speech without annotator agreement is missing from the timeline, and each segment's transcript comes from the closest-matching annotator segment (the annotators' texts agree 99% of the time).
+
+Transcripts stand in for a streaming ASR. A segment's text is readable only once the segment has ended. Before the text model reads them, bracketed annotation tags such as `[laughs]` are stripped, since an ASR never outputs them, and fillers such as "um" and "uh" are kept, since an ASR usually does.
 
 `tests/test_causality.py` checks that every model in its `MODELS_UNDER_TEST` list is causal: rewriting the audio, text or segments after a time t never changes the firings before t.
 
@@ -63,9 +66,10 @@ The segments are TurnBench's 2-of-3 consensus segments, so their ends are the pa
 
 ```bash
 uv run python scripts/evaluate.py baseline
+uv run python scripts/evaluate.py text-only
 ```
 
-This sweeps the model's knob (for the baseline, the silence timeout N from 0 to 3000 ms) on the development conversations and writes:
+This fits the model to the development conversations, sweeps its knob (for the baseline, the silence timeout N from 0 to 3000 ms; for the text-only model, the P_text threshold from 0 to 1) and writes:
 
 - `results/models/<model>/`, that model only:
   - `sweep.csv`: recall, **false-cut-in rate** and p10/p50/p90 **detection latency** at every knob setting, on all development conversations;
@@ -75,7 +79,11 @@ This sweeps the model's knob (for the baseline, the silence timeout N from 0 to 
   - `results.md`: recall and detection latency at a false-cut-in rate of 0.10 or less, one row per model;
   - `detection_latency_vs_false_cut_in_rate.png` (main figure) and `recall_vs_false_cut_in_rate.png`: one line per model.
 
+- `artifacts/<model>/`, for a trained model: the final model at the chosen knob setting, trained on all development conversations, for serving. For the text-only model this is `text-only.json` (the head, its threshold and the encoder's name), loaded back with `turn_detector.models.text_only.load_text_only`.
+
 The script also prints the comparison table.
+
+A trained model's classifier is cross-fitted: the head that scores a conversation is trained on the other speaker groups only, the same folds the knob's cross-validation uses, so no conversation is scored by a head that saw it. The threshold for a fold is still chosen on the other folds' cross-fitted scores, whose heads did see that fold.
 
 The knob is chosen by cross-validation that leaves one speaker group out per fold (9 folds, [ADR 0003](docs/adr/0003-train-on-turnbench-dev.md)). Each fold picks the highest-recall setting within the 0.10 false-cut-in budget on the other folds (TurnBench's operating-point rule, ties to lower median latency), and the held-out folds' scores are pooled for the table. The figures show the sweep on all development conversations. The held-out conversations aren't scored.
 

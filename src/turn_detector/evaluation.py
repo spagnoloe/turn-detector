@@ -20,9 +20,8 @@ from turnbench.score import TaskScore, merge, score_task
 from turnbench.submission import ConversationPrediction, SpeakerEvents, validate_event_times
 
 from turn_detector.data import ConversationAnnotations, iter_annotations
-from turn_detector.model import Model, SpeakerSide
+from turn_detector.model import Fitted, Model, SpeakerSide
 from turn_detector.events import turnbench_conversation
-from turn_detector.models import RegisteredModel
 from turn_detector.split import ConversationInfo, speaker_groups
 from turn_detector.timeline import speaker_sides
 
@@ -110,9 +109,11 @@ class KnobScores:
         return [Scores.of(knob, self.total(knob, conversation_ids)) for knob in self.by_knob]
 
 
-def score_knobs(model: RegisteredModel, conversations: Sequence[EvaluationConversation]) -> KnobScores:
+def score_knobs(
+    model: Fitted, knob_values: Sequence[float], conversations: Sequence[EvaluationConversation]
+) -> KnobScores:
     by_knob = {}
-    for value in model.knob_values:
+    for value in knob_values:
         built = model.build(value)
         by_knob[value] = {c.info.conversation_id: score_conversation(built, c) for c in conversations}
     return KnobScores(by_knob)
