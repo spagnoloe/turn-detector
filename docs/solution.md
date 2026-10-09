@@ -15,6 +15,30 @@ Each trained model fires when its P(EOT) reaches a threshold, or else at a silen
 
 **Result: on the held-out conversations, no trained model beats the silence timeout** (likely reasons in [Why no trained model beats the timeout](#why-no-trained-model-beats-the-timeout)). All four reach a recall of 0.85–0.88. All four also exceed the 0.10 false-cut-in budget (0.125–0.142), because the held-out speakers pause longer within their turns than the development speakers. The audio-only model is the only one that fires early with any regularity (p10 detection latency 551 ms), but its later backstop costs median latency. Text-only requests meet the <100 ms request-latency target on the laptop. Audio requests do not (about 130 ms alone), a limitation of running everything on one MacBook Air ([ADR 0002](adr/0002-laptop-only-compute.md)).
 
+## Training samples
+
+Every training sample starts from a **pause**: a point where one of the user's speech segments ends.
+
+- **Where the segments and labels come from.** TurnBench gives each speaker's channel three annotators' segment lists. Its own gold construction, reused here (`turn_detector.events`), keeps a segment only when 2 of 3 annotators agree on its start and end within ±200 ms.
+- **How a segment end is labelled.** It is an **EOT** when the other speaker takes the floor next, or when it is the speaker's last turn. It is the start of a **mid-turn pause** when the same speaker resumes first. Segment ends without agreement are not trained on.
+- **Who counts as the user.** Each speaker of a conversation is the user in turn.
+
+The 26 development conversations give 1392 EOTs and 711 mid-turn pauses. Each model turns them into samples differently:
+
+| Model | One sample | Label | Samples on development |
+|---|---|---|---:|
+| text-only | One labelled pause: the other speaker's previous turn and the user's turn so far (the last 64 tokens), as of the segment end | EOT or mid-turn pause | 2103 (1392 EOT, 711 mid-turn) |
+| audio-only | One 50 ms step of a labelled pause, up to 1 s into it or until the user resumes: the last 1 s of audio ending at that step, plus the silence so far | The pause's label | 34,584 (26,761 EOT, 7823 mid-turn) |
+| | One point per second inside each speech segment: the last 1 s of audio, with zero silence | Not EOT | 16,452 |
+| combined | The audio-only model's pause steps: out-of-fold P_audio, the latest P_text whose text has arrived, and the silence so far | The pause's label | 34,584 |
+
+How the audio samples are spread has consequences:
+
+- **Mid-turn pauses supply far fewer steps.** An EOT pause usually supplies all of its steps: a median of 20, because the user stays silent for at least a second. A mid-turn pause supplies a median of 10 steps, because the user resumes after about half a second. So EOT steps outnumber mid-turn steps 3.4 to 1 within pauses, and late in a pause nearly every step is an EOT. The silence duration alone therefore separates the classes well, as it does for the timeout.
+- **The samples are not independent.** Neighbouring steps of one pause hear almost the same audio. This is why the audio head needs strong regularisation.
+
+The audio and combined models are trained up to 1 s into a pause but listen up to 3 s in at evaluation (see [What the audio-only model adds](#what-are-the-limits-of-the-current-solution)).
+
 ## Results
 
 ### Held-out conversations
@@ -207,6 +231,11 @@ Every result above rests on these. The first four make our numbers look better t
 - **Annotation segment ends instead of a real VAD.** Every model's pauses, and the silence duration the audio model reads, come from the annotators' 2-of-3 consensus segments: a perfect pause detector. A real VAD misses pauses, splits words and reacts late.
 - **A fixed 200 ms ASR lag.** A segment's text becomes readable 200 ms after the segment ends, so the text model cannot fire earlier than that. Real ASR lag varies with the vendor and the utterance.
 - **Gold events need 2-of-3 annotator agreement.** Pauses the annotators disagree on are neither trained on nor scored, and those are the hardest ones.
+- **The segment boundaries are not independent human judgments.**
+  - **What the data shows.** TurnBench's annotation is VAD-segmented: the annotators worked from a shared automatic segmentation, labelling, transcribing and occasionally editing its segments. On the dev set, 97.0% of an annotator's segments have the exact same start and end as another annotator's, to the millisecond (97.2% within the ±200 ms tolerance).
+  - **What agreement filters.** The 2-of-3 agreement step mostly removes the few segments the annotators edited differently, and the ones they labelled differently (floor-holding speech against a backchannel or noise). It does not reconcile timings.
+  - **What labels a pause.** Whether a pause is an EOT or a mid-turn pause is not marked by anyone. It follows from who speaks next.
+  - **What it means for the results.** The pauses our models are given start at exactly the times the gold events are anchored to, so the "perfect VAD" above is the same segmentation that defines the gold. A deployed VAD would not line up this well.
 
 **Firing rule and tuning.**
 
