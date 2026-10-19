@@ -15,6 +15,7 @@ uv run python scripts/evaluate.py baseline       # each model: train, sweep, cro
 uv run python scripts/evaluate.py text-only
 uv run python scripts/evaluate.py audio-only     # about 15 min the first time (audio features)
 uv run python scripts/evaluate.py combined
+uv run python scripts/dashboard.py               # compare the results, on http://localhost:8050
 uv run pytest                                    # tests
 uv run uvicorn turn_detector.serving:app         # the API, on http://localhost:8000
 ```
@@ -133,6 +134,18 @@ The held-out conversations are scored once, with no tuning afterwards, so the sc
 rm results/models/*/held_out.json
 uv run python scripts/evaluate_held_out.py
 ```
+
+## Results dashboard
+
+```bash
+uv run python scripts/dashboard.py               # http://localhost:8050; --port to change it
+```
+
+This opens an interactive page in the browser comparing every model with results in `results/models/`. It reads only what is on disk, so it works straight from a fresh clone with the committed results, and it trains nothing. Reload the page after a run of `scripts/evaluate.py` to see the new results. The page loads Plotly from jsDelivr, so it needs an internet connection.
+
+- A false-cut-in budget slider. At each budget, a table gives each model's operating point: its highest-recall setting within the budget, ties going to the lower median detection latency. That is the operating-point rule cross-validation uses, applied to the sweep on all development conversations, so these scores are optimistic.
+- Recall and median detection latency against the false-cut-in rate, one line per model, with the cross-validated (circles) and held-out (diamonds) scores and the published references marked. Hover shows each point's setting and scores; click a legend entry to hide a model.
+- The setting chosen in cross-validation, with its per-fold range, its cross-validated scores and its held-out scores, next to the published references.
 
 ## Serving
 
